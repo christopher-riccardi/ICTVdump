@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Code by:
+    [+] Christopher Riccardi, PhD Student at University of Florence (Italy) https://www.bio.unifi.it/vp-175-our-research.html
+        Currently Guest Researcher at Sun Lab, University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
+        PhD Project Title: Computational modelling of omics data from condition-dependent datasets.
+        Advisor: Marco Fondi (U Florence)
+    [+] Rachel Yuqiu Wang, PhD Student at University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
+        Advisor: Fengzhu Sun (USC)
+"""
+from multiprocessing import Pool
+from Bio import SeqIO
+import pandas as pd
+import subprocess
+import argparse
+import logging
+import shutil
+import json
+import time
+import sys
+import os
+
+logging.basicConfig(format='%(asctime)s - %(funcName)s:%(lineno)d [%(levelname)s] %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
+PROGRAM, VERSION='ICTVdump', '0.1.0'
+class Args():
+    """
+    An argparse wrapper class for a customized utilization of command line options
+    """
+    def __init__(self):
+        self.args = {'subcommand':None, 
+                     '-i':None,
+                     '-u':None,
+                     '-b':None,
+                     '-m':None}
+        self._subcommands = ['download', 'match', 'precalculate']
+        args = sys.argv
+        args.remove(args[0]) # Remove script name from args
+        if not len(args): # Must have args
+            self.SubCommandError()
+        try:
+            self._choice = self._subcommands.index(args[0]) # Get subcommand index
+        except ValueError:
+            self.SubCommandError()
+        self.args['subcommand'] = self._choice
+        self.Funclist = [self.DownloadParser, self.MatchParser, self.PrecalculateParser]
+
+    def SubCommandError(self):
+        err = 'Choose a subcommand amongst the following:\n   ' + '\n   '.join(self._subcommands) + '\n'
+        sys.stderr.write(err)
+        sys.exit(1)
+
+    def Parse(self):
+        self.Funclist[self._choice]() # Call function which index is in subcommand choice
+        return self.args
+
+    def DownloadParser(self):
+        descr = ' '.join(['Use Entrez Direct https://www.ncbi.nlm.nih.gov/books/NBK179288/ to download genbank files by accession.',
+                'Entrez allows to download batches of up to 100 accession at a time. This is much faster than single downloads.'])
+        parser = argparse.ArgumentParser(description=descr)
+        parser.add_argument(
+            '-u', '--url', dest='url', default="https://ictv.global/vmr/current", help='Use urllib to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
+        parser.add_argument(
+            '-b', '--batch-size', dest='batch_size', type=int, default=75, help='Number of accessions in batches for Entrez Direct download. Must be an integer [1,100], Default: 75')
+        parser.add_argument(
+            '-i', '--input', dest='input', required=True, help='Name of working directory to be created')
+        parser.add_argument(
+            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
+        args = parser.parse_args()
+        self.args['-u'] = args.url
+        if not 0 < int(args.batch_size) < 101:
+            logging.error('-b value must be in a range [1,100]')
+        self.args['-b'] = int(args.batch_size)
+        self.args['-i'] = args.input
+        self.args['-c'] = args.cleanup
+
+    def MatchParser(self):
+        descr = 'Call ORFs using prodigal-gv (a fork of Prodigal) and run MMSeqs2 to match geNomad\'s marker genes.'
+        parser = argparse.ArgumentParser(description=descr)
+        parser.add_argument(
+        '-i', '--input', dest='input', required=True, help='Name of working directory created by ictvdump download')        
+        parser.add_argument(
+        '-u', '--url', dest='url', default="https://zenodo.org/records/6994742/files/genomad_msa_v1.0.tar.gz?download=1", help='The link to genomad_msa_v1.0.tar.gz markers file on Zenodo. No need to specify unless it moves from Zenodo')
+        parser.add_argument(
+        '-t', '--threads', dest='threads', default=1, help='Number of threads for running MMSeqs2 in multithreading (1)')        
+        parser.add_argument(
+            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
+        args = parser.parse_args()
+        self.args['-u'] = args.url
+        self.args['-i'] = args.input
+        self.args['-t'] = args.threads
+        self.args['-c'] = args.cleanup
+
+    def PrecalculateParser(self):
+        descr = 'Use formula from the paper to precalculate the log-likelihood ratios when the i-th marker is present and absent (both)'
+        parser = argparse.ArgumentParser(description=descr)
+        parser.add_argument(
+        '-i', '--input', dest='input', required=True, help='Name of working directory created by ictvdump download')        
+        parser.add_argument(
+        '-t', '--threads', dest='threads', default=1, help='Number of threads for precalculating LLRs in multithreading (1)')        
+        parser.add_argument(
+            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
+        args = parser.parse_args()
+        self.args['-i'] = args.input
+        self.args['-t'] = args.threads
+        self.args['-c'] = args.cleanup
+
+class VTU():
+    """
+    Virus Taxonomy Updater class
+    """
+    def __init__(self, working_directory) -> None:
+        ## Directories
+        self._working_directory = working_directory
+        self._vmr_dir = os.path.join(self._working_directory, 'VMR')
+        self._index_dir = os.path.join(self._working_directory, 'index')
+        self._download_dir = os.path.join(self._working_directory, 'download')
+        self._markers_dir = os.path.join(self._working_directory, 'markers')
+        self._orfs_dir = os.path.join(self._working_directory, 'ORFs')
+        self._tmp_dir = os.path.join(self._working_directory, 'tmp')
+        self._llr_dir = os.path.join(self._working_directory, 'LLR')
+
+        ## Files
+        self._vmr_spreadsheet = os.path.join(self._vmr_dir, 'vmr_spreadsheet.xlsx')
+        self._index_file = os.path.join(self._index_dir, 'index.json')
+        self._exemplars_file = os.path.join(self._working_directory, 'exemplars.tsv.gz')
+        self._exemplar_sorts_fasta = os.path.join(self._working_directory, 'exemplar_sorts.fa')
+        self._exemplar_orfs = os.path.join(self._orfs_dir, 'exemplar_sorts.faa')
+        self._exemplar_sorts_data = os.path.join(self._working_directory, 'exemplar_sorts.tsv')
+        self._flagged_file = os.path.join(self._working_directory, 'flagged.txt')
+        self._genomad_gzipped = os.path.join(self._working_directory, 'genomad_msa_v1.0.tar.gz')
+        self._genomad_markers = os.path.join(self._markers_dir, 'genomad_markers.faa')
+        self._mmseqs_m8 = os.path.join(self._orfs_dir, 'mmseqs_output.m8')
+        self._feature_matrix = os.path.join(self._working_directory, 'feature_matrix.pkl')
+
+        ## Other
+        self.Funclist = [self.download_subcommand, self.match_subcommand, self.precalculate_subcommand]
+        self.fm = None
+        self.es = None
+        self.genera = None
+        self.eps = 0.001   
+        ## Initialize working directory
+        if CreateDirectory(self._working_directory) == 1:
+            sys.exit(1)
+
+    def download_subcommand(self):
+        if CreateDirectory(self._vmr_dir) == 1:
+            sys.exit(1)
+        if DownloadInternetFile(params['-u'], self._vmr_spreadsheet) == 1:
+            logging.error('Cannot download VMR file. Are you connected to the internet? Is the URL still valid?')
+            sys.exit(1)
+        if CreateDirectory(self._index_dir) == 1:
+            sys.exit(1)
+        if not os.path.isdir(self._vmr_dir) or not os.path.isfile(self._vmr_spreadsheet):
+            logging.error('Something is wrong with I/O of your main working directory')
+            sys.exit(1)
+        index = Excel2Index(self._vmr_spreadsheet)
+        with open(self._index_file, 'w') as w:
+            json.dump(index, w)
+        try:
+            index = json.load(open(self._index_file))
+        except:
+            logging.error('Something is wrong with your index file')
+            sys.exit(1)
+        if not os.path.isdir(self._vmr_dir) or not os.path.isfile(self._vmr_spreadsheet) or not os.path.isfile(self._index_file):
+            logging.error('Something is wrong with I/O of your main working directory')
+            sys.exit(1)
+        if CreateDirectory(self._download_dir) == 1:
+            sys.exit(1)
+        index = json.load(open(self._index_file))
+        logging.info('Proceeding with standard full download')
+        [EntrezRunner(batch, self._download_dir) for batch in Batchata(index)]
+
+        from Bio.SeqUtils import gc_fraction
+        if not os.path.isfile(self._vmr_spreadsheet) or not os.path.isfile(self._index_file) or not os.path.isdir(self._download_dir):
+            logging.error('Something is wrong with I/O of your main working directory')
+            sys.exit(1)
+        logging.info('Extracting data from GenBank files, please wait')
+        flags, files, index, df = [], \
+            [file.replace('.gb', '') for file in os.listdir(self._download_dir)], json.load(open(self._index_file)), \
+                pd.read_excel(self._vmr_spreadsheet) # Load accessions and index
+        flags = [data['accession'] for data in index if data['accession'] not in files] # Files in the self._download_dir are non-empty
+        accessions, sorts, virus_names, hosts, hosts_VMR, partitions, \
+        molecule_types, genome_compositions, topologies, genome_coverages, \
+        exemplars_additionals, dates, countries, lengths, gc_fractions, \
+        sequences, realms, subrealms, kingdoms, subkingdoms, phyla, \
+        subphyla, classes, subclasses, orders, suborders, families, \
+        subfamilies, genera, subgenera, species = [], [], [], [], [], \
+        [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], \
+        [], [], [], [], [], [], [], [], [], []
+        for data in index: # Data is the single dictionary in the index file, which is a list
+            if data['accession'] in flags:
+                continue # Skip this specific dict if it's been flagged
+            gb = os.path.join(self._download_dir, data['accession']+'.gb') # Load GenBank file in self._download_dir. GenBank file has plenty of information which we try fetching
+
+            ## Handle sequence first
+            d_sequence = '>%s %s\n' % (data['accession'], data['sort'])
+            seq = GenBank2Seq(gb) # Get it or download it!
+            if seq==None:
+                flags.append(data['accession'])
+                continue # Flag and skip if we cannot retrieve sequence
+            d_gc_fraction=gc_fraction(seq) # Calc GC content of this object
+            d_length=len(seq)
+            if data['start']: # Provirus-like get handled here
+                seq=seq[int(data['start']):int(data['end'])]
+            d_sequence += seq # Format header + sequence
+
+            ## Handle more info
+            info = GenBank2Info(gb)
+            d_accession, d_sort, d_partition, d_molecule_type, d_topology, d_date, d_host, d_country = data['accession'], data['sort'], data['partition'], info['molecule_type'], info['topology'], info['date'], info['host'], info['country']
+            
+            ## Handle taxonomy
+            row = df[df['Sort']==d_sort] # Get single row with same 'Sort' i.e., VMR identifier
+            d_virus_name, d_exemplar_additional, d_host_VMR, d_genome_coverage,\
+            d_genome_composition, d_Realm, d_Subrealm, d_Kingdom, d_Subkingdom, \
+            d_Phylum, d_Subphylum, d_Class, d_Subclass, d_Order, d_Suborder, \
+            d_Family, d_Subfamily, d_Genus, d_Subgenus, d_Species = row['Virus name(s)'].values[0], \
+            row['Exemplar or additional isolate'].values[0], row['Host source'].values[0], row['Genome coverage'].values[0], row['Genome composition'].values[0] ,\
+            row['Realm'].values[0], row['Subrealm'].values[0], row['Kingdom'].values[0], row['Subkingdom'].values[0], \
+            row['Phylum'].values[0], row['Subphylum'].values[0], row['Class'].values[0], row['Subclass'].values[0], \
+            row['Order'].values[0], row['Suborder'].values[0], row['Family'].values[0], row['Subfamily'].values[0],\
+            row['Genus'].values[0], row['Subgenus'].values[0], row['Species'].values[0] 
+            accessions.append(d_accession)
+            sorts.append(d_sort)
+            virus_names.append(d_virus_name)
+            hosts.append(d_host)
+            hosts_VMR.append(d_host_VMR)
+            partitions.append(d_partition)
+            molecule_types.append(d_molecule_type)
+            genome_compositions.append(d_genome_composition)
+            topologies.append(d_topology)
+            genome_coverages.append(d_genome_coverage)
+            exemplars_additionals.append(d_exemplar_additional)
+            dates.append(d_date)
+            countries.append(d_country)
+            lengths.append(d_length)
+            gc_fractions.append(d_gc_fraction)
+            sequences.append(d_sequence)
+            realms.append(d_Realm)
+            subrealms.append(d_Subrealm)
+            kingdoms.append(d_Kingdom)
+            subkingdoms.append(d_Subkingdom)
+            phyla.append(d_Phylum)
+            subphyla.append(d_Subphylum)
+            classes.append(d_Class)
+            subclasses.append(d_Subclass)
+            orders.append(d_Order)
+            suborders.append(d_Suborder)
+            families.append(d_Family)
+            subfamilies.append(d_Subfamily)
+            genera.append(d_Genus)
+            subgenera.append(d_Subgenus)
+            species.append(d_Species)
+            ## End of loop
+        logging.info(f'Flagged {len(flags)} entries, updating index')
+        [index.remove(data) for data in index if data['accession'] in flags] # Remove dictionaries from index list when the accession is flagged
+        print(*flags, sep='\n', file=open(self._flagged_file, 'w')) # Also write flagged accession to file
+        with open(self._index_file, 'w') as w:
+            json.dump(index, w) # Update index with clean information
+        logging.info('Writing tab-delimited, gzip-compressed table. Please wait')
+        ## Merge with taxonomy from ICTV
+        exemplars = pd.DataFrame({'accession':accessions, 'sort':sorts, 'virus_name':virus_names, 'host':hosts, 'host_VMR':hosts_VMR, \
+                                    'partition':partitions, 'molecule_type':molecule_types, 'genome_composition':genome_compositions, \
+                                    'topology':topologies, 'genome_coverage':genome_coverages, 'exemplar_additional':exemplars_additionals, \
+                                    'date':dates, 'country':countries, 'length':lengths, 'gc_fraction':gc_fractions, 'sequence':sequences, \
+                                    'Realm':realms, 'Subrealm':subrealms, 'Kingdom':kingdoms, 'Subkingdom':subkingdoms, 'Phylum':phyla, \
+                                    'Subphylum':subphyla, 'Class':classes, 'Subclass':subclasses, 'Order':orders, 'Suborder':suborders, \
+                                    'Family':families, 'Subfamily':subfamilies, 'Genus':genera, 'Subgenus':subgenera, 'Species':species})
+        exemplars.to_csv(self._exemplars_file, compression='gzip', sep='\t', index=False)
+        if params['-c']:
+            shutil.rmtree(self._download_dir)
+            shutil.rmtree(self._index_dir)
+        logging.info(f'Big table written at {self._exemplars_file}. Now filtering and writing FASTA.')
+        logging.info('Note that these sequences will be grouped by viral sort, and the segmented viruses concatenated.')
+        status = self.PreprocessExemplars()
+        logging.info(f'Finished with status: {status}')
+
+    def match_subcommand(self):
+        import tarfile, glob
+        from subprocess import Popen, PIPE
+        import numpy as np
+
+        if CreateDirectory(self._orfs_dir) == 1:
+            sys.exit(1)
+        if CreateDirectory(self._markers_dir) == 1:
+            sys.exit(1)
+        if DownloadInternetFile(params['-u'], self._genomad_gzipped) == 1:
+            logging.error('Cannot download genomad_msa_v1.0.tar.gz file from Zenodo. Are you connected to the internet? Is the URL still valid?')
+            sys.exit(1)
+        logging.info('Extracting markers tar file')
+        tf = tarfile.open(self._genomad_gzipped)
+        tf.extractall(self._markers_dir)
+        tf.close()
+        genomad_markers = glob.glob(self._markers_dir + "/*/*V*.faa") ## 161,862 markers with medium to high specificity for viruses
+        if len(genomad_markers) == 0:
+            logging.error('No markers were extracted.')
+            sys.exit(1)
+        else: logging.info(f'{len(genomad_markers)} markers satisfy the requirements')
+
+        def run_cmd(cmd):
+            process = Popen(cmd, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+        
+        cmd = ['prodigal-gv', '-p', 'meta', '-i', self._exemplar_sorts_fasta, '-a', self._exemplar_orfs]
+        logging.info('Inferring ORFs using Prodigal-gv')
+        run_cmd(cmd)
+
+        if not os.path.isfile(self._exemplar_orfs):
+            logging.error('ORFs file not written. Something went wrong with ORF-inference.')
+            sys.exit(1)
+
+        logging.info('Formatting markers')
+        f = open(self._genomad_markers, 'w')
+        for file in genomad_markers:
+            d = Seq2Dict(file)
+            for i, key in enumerate(list(d.keys())):
+                d['>seq_'+str(i)+'_'+os.path.basename(file).replace('.faa', '')] = d.pop(key)
+            for key, sequence in d.items():
+                print(key, file=f)
+                print(sequence, file=f)
+        f.close()
+
+        cmd = ["mmseqs", "easy-search", self._exemplar_orfs, self._genomad_markers, self._mmseqs_m8, self._tmp_dir, '-s', '7', '-e', '1e-3', '-c', '0.2', '--cov-mode', '1', '--threads', params['-t']]
+        
+        logging.info('Matching markers using MMSeqs2')
+        run_cmd(cmd)
+
+        if not os.path.isfile(self._mmseqs_m8):
+            logging.error('-m8 file (MMSeqs2) not written. Something went wrong with marker-matching.')
+            sys.exit(1)
+
+        logging.info('Formatting feature matrix')
+        m8 = pd.read_csv(self._mmseqs_m8, 
+                        sep='\t', 
+                        header=None, 
+                        names=['query', 
+                                'target', 
+                                'percid', 
+                                'alnlen', 
+                                'mis', 
+                                'gaps', 
+                                'qstart', 
+                                'qend', 
+                                'tstart', 
+                                'tend', 
+                                'evalue', 
+                                'bitscore'])
+        # if no further filtering, keep the first two columns
+        m8 = m8[['query', 'target']]
+
+        # remove trailing ORF [mmseq2-added string]
+        q_split = m8['query'].str.rsplit(pat='_', n=1, expand=True)
+        # remove leading variable string in the geNomad markers
+        t_split = m8['target'].str.rsplit(pat='_', n=1, expand=True)
+        # update original data frame with redundant information
+        m8['query'] = q_split.iloc[:,0]
+        m8['target'] = t_split.iloc[:,1]
+
+        q_split, t_split = list(), list() # free memory
+        # ==== Data gazing ==== # For users wishing to delve into details
+        # how many markers were mapped?
+        np.unique(m8['target']).size
+
+        # look at the most present genomad markers
+        marker_counts = m8['target'].value_counts()
+        marker_counts
+
+        # also look at those present only once that can be discarded
+        list(marker_counts==1).count(True)
+
+        summary = f'1stQu: {np.quantile(marker_counts, 0.25)} \
+                2ndQu: {np.quantile(marker_counts, 0.5)} \
+                3rdQu: {np.quantile(marker_counts, 0.75)} \
+                min: {np.min(marker_counts)} \
+                max: {np.max(marker_counts)} \
+                avg: {np.mean(marker_counts):4.2f}'
+        #logging.info(summary)
+
+        # ==== Back to editing ==== #
+
+        # simplify data frame by removing duplicated couples (natural byproduct of multiplicity)
+        m8 = m8.drop_duplicates(subset=['query', 'target'])
+        # convert to presence/absence matrix using crosstab and applymap
+
+        #feature_matrix = pd.crosstab(m8['query'], m8['target']).applymap(lambda x: 1 if x > 0 else 0)
+        # While writing the code FutureWarning: DataFrame.applymap has been deprecated. Use DataFrame.map instead.
+        feature_matrix = pd.crosstab(m8['query'], m8['target']).map(lambda x: 1 if x > 0 else 0)
+
+        # picklize it for a WAY faster I/O
+        feature_matrix.to_pickle(self._feature_matrix)
+        ## Can read it again using df=pd.read_pickle('feature_matrix.pkl')
+
+        if params['-c']:
+            shutil.remove(self._markers_dir)
+            shutil.remove(self._orfs_dir)
+            shutil.remove(self._tmp_dir)
+
+        status = 1 - os.path.isfile(self._feature_matrix)
+        logging.info(f'Finished with status: {status}')
+
+    def precalculate_subcommand(self):
+        if CreateDirectory(self._llr_dir) == 1:
+            sys.exit(1)
+        try:
+            self.fm = pd.read_pickle(self._feature_matrix)
+        except:
+            logging.error('Could not read feature matrix file. Did you run previous subcommands first?')
+            sys.exit(1)
+        try:
+            self.es = pd.read_csv(self._exemplar_sorts_data, sep='\t')
+        except:
+            logging.error('Could not read exemplar sorts metadata file. Did you run previous subcommands first?')
+            sys.exit(1)
+        survived = self.fm.index
+        self.es = self.es[self.es['header'].isin(survived)] ## keep exemplars for which there are genomes now
+        gen_25_up = [] # n > 24
+        gen_10_25 = [] # n in [10, 25)
+        gen_5_10 = [] # n in [5, 10)
+        gen_3_5 = [] # n in [3, 5)
+        self.genera = sorted(self.es['Genus'].dropna().unique())
+        for genus in self.genera:
+            sub_len = self.es.loc[self.es['Genus'] == genus, 'header'].isin(self.fm.index).sum()
+            if sub_len > 24:
+                gen_25_up.append(genus)
+            if 9 < sub_len < 25:
+                gen_10_25.append(genus)
+            if 4 < sub_len < 10:
+                gen_5_10.append(genus)
+            if 2 < sub_len < 5:
+                gen_3_5.append(genus)
+        union = sorted(list(set(gen_25_up + gen_10_25 + gen_5_10 + gen_3_5)))
+
+        print(f"Dataset gen_25_up contains {len(gen_25_up)} genera or {self.es.loc[(self.es['Genus'].isin(gen_25_up)), 'Species'].unique().size} distinct species")
+        print(f"Dataset gen_10_25 contains {len(gen_10_25)} genera or {self.es.loc[(self.es['Genus'].isin(gen_10_25)), 'Species'].unique().size} distinct species")
+        print(f"Dataset gen_5_10 contains {len(gen_5_10)} genera or {self.es.loc[(self.es['Genus'].isin(gen_5_10)), 'Species'].unique().size} distinct species")
+        print(f"Dataset gen_3_5 contains {len(gen_3_5)} genera or {self.es.loc[(self.es['Genus'].isin(gen_3_5)), 'Species'].unique().size} distinct species")
+        print(f"The union of these contains {len(union)} genera or {self.es.loc[(self.es['Genus'].isin(union)), 'Species'].unique().size} distinct species")
+        print(f"The union dataset represents {self.es.loc[(self.es['Genus'].isin(union)), 'Species'].unique().size / self.es['Species'].unique().size * 100:3.2f} % of all ICTV species")
+        print(f"Also, the union dataset represents {len(union) / len(self.genera) * 100:3.2f} % of all ICTV genera")
+
+        for genus in union:
+            if CreateDirectory(os.path.join(self._llr_dir, genus)) == 1:
+                sys.exit(1)
+        with Pool(int(params['-t'])) as p:
+            results = p.map(self.precalculate_LLR_background_by_genus, union)
+            #data = {k: v for d in results for k, v in d.items()}
+        shutil.make_archive(self._llr_dir, 'zip', self._llr_dir)
+        if params['-c']:
+            shutil.rmtree(self._llr_dir)
+        status = 1 - os.path.isfile(self._llr_dir+'.zip')
+        logging.info(f'Finished with status: {status}')
+
+    def precalculate_LLR_background_by_genus(self, genus):
+        import numpy as np
+        outdir = os.path.join(self._llr_dir, genus)
+        outfile_precalc = os.path.join(outdir, 'genus_LLR.precalc') # this will be the general precalculated file
+
+        ## Nc in genera since we use ALL of the rest in the background (denominator)
+        df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in self.genera])
+
+        ## essentially precalculate both cases: when the ith marker is present and when it is absent
+        numerator = df.loc[(df.index==genus)]
+        denominator = np.apply_along_axis(lambda col: PositiveMean(col), axis=0, arr=df.values)
+
+        Ig1_vals = np.array([np.log(i) for i in  (((numerator)+self.eps) / ((denominator)+self.eps)).values[0]])
+        Ig0_vals = np.array([np.log(i) for i in  (((1-numerator)+self.eps) / ((1-denominator)+self.eps)).values[0]])
+
+        stacked = np.vstack((Ig0_vals, Ig1_vals))
+        np.savetxt(outfile_precalc, stacked, delimiter='\t', fmt='%4.3f')
+
+    def PreprocessExemplars(self):
+        import numpy as np
+        df = pd.read_csv(self._exemplars_file, compression='gzip', sep='\t')
+        # group by sorts first
+        tmp = []
+        for sort in df['sort'].unique():
+            sub = df[(df['sort']==sort)]
+            length, gc_fraction = sub['length'].sum(), np.mean(sub['gc_fraction'])
+            # the header scheme is {sort identifier} {number of partitions} {size of the concatenated sequence}
+            unified_sequence = f'>sort_{sort}_{sub.shape[0]}_{length}'
+            unified_sequence += '\n' # need a newline here
+            for _, row in sub.iterrows():
+                s = row['sequence'].split('\n')[1]
+                unified_sequence += s
+            # now get a random representative of the subset and update values
+            s = sub.sample(1).copy()
+            s['length'] = length
+            s['gc_fraction'] = gc_fraction
+            s['sequence'] = unified_sequence
+            s['header'] = f'sort_{sort}_{sub.shape[0]}_{length}'
+            tmp.append(s)
+        # Now concatenate, and update old data frame
+        df = pd.concat(tmp)
+        
+        # set a lower bound on genome size (about the size of a gene, 1000bp)
+        df = df[(df['length'])>1000]
+        # we noticed some proviruses in which the proviral boundaries are not specified
+        # this leads to entries with entire bacterial genomes and need to be removed
+        # look at the largest entries first
+        df[(df['length']>1e06)]
+        # after looking up the top 22 on the NCBI, we found that the following genomes are entirely bacterial
+        #AE006468 
+        #CP015418 
+        #CP000031 
+        #CP000830 
+        #CP001312
+        #CP001357
+        #BX897699
+        # so remove these
+        bacterial = ['AE006468', 'CP015418', 'CP000031', 'CP000830', 'CP001312', 'CP001357', 'BX897699']
+        df = df[~(df['accession'].isin(bacterial))]
+        # write sequence to file
+        with open(self._exemplar_sorts_fasta, 'w') as f:
+            for _, row in df.iterrows():
+                print(row['sequence'], file=f)
+        # subset data frame to include only the data needed for classification
+        
+        df = df[['sort', 
+            'header', 
+            'Realm',
+            'Kingdom',
+            'Phylum',
+            'Class',
+            'Order',
+            'Family',
+            'Genus',
+            'Species']]
+        
+        df.to_csv(self._exemplar_sorts_data, sep='\t', index=False)
+        if not os.path.isfile(self._exemplar_sorts_fasta) or not os.path.isfile(self._exemplar_sorts_data):
+            return 1
+        return 0
+
+def PositiveMean(col):
+    import numpy as np
+    pos_frac = col[col > 0]
+    if pos_frac.size == 0: return 0
+    return 1-(1 / np.sqrt(np.power(2, pos_frac).sum()))
+
+def Seq2Dict(file):
+    d = {}
+    header = None
+    lines = [line.rstrip() for line in open(file)]
+    ftells = []
+    for i, line in enumerate(lines):
+        if line.startswith('>'):
+            header = line.split('>')[1].split()[0]
+            d[header] = ""
+            ftells.append(i+1)
+    ftells.append(i+2)
+    for i, header in enumerate(list(d.keys())):
+        d[header] = ''.join(lines[ftells[i]:ftells[i+1]-2])
+    return d
+
+def Excel2Index(vmr_spreadsheet):
+    df = pd.read_excel(vmr_spreadsheet) # Requires openpyxl installed
+    df = df[~df['Virus GENBANK accession'].isnull()] # Some records don't link GenBank accessions
+    index = []
+    for i, row in df.iterrows():  
+        sort, accessions = row['Sort'], row['Virus GENBANK accession']
+        d_accession, d_sort, d_partition, d_start, d_end = None, sort, None, None, None
+        accessions = accessions.replace(' ', '')
+        accessions = accessions.split(';')
+        for accession in accessions:
+            d_accession, d_partition, d_start, d_end = ParseString(accession) # ParseString gets info from 'Virus GENBANK accession' column
+            d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
+            index.append(d_str)
+    return index
+
+def ParseString(s):
+    ## Parse a single 'Virus GENBANK accession' record splitted string
+    s_accession, s_partition, s_start, s_end = None, None, None, None
+    if ':' in s:
+        s_partition = s.split(':')[0] 
+        s = s.split(':')[1:][0]
+    if '(' in s:
+        s_start, s_end = s.split('(')[1].split('.')[0], s.split('(')[1].split('.')[1].split(')')[0]
+        s = s.split('(')[0]
+    s_accession = s
+    return s_accession, s_partition, s_start, s_end
+
+def EntrezRunner(batch, download_dir):
+    ## Run Entrez Direct commands 'esearch' piped with 'efetch'
+    accessions = [elem['accession'] for elem in batch]
+    logging.info(f'Running Entrez Direct on a batch of {len(accessions)} accessions')
+    script = "esearch -db nuccore -query " + ','.join(accessions) + " | efetch -format genbank"
+    result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
+    time.sleep(0.5) # Give it a break!
+    consistent = len(accessions) == result.count('ACCESSION  ') # There should be as many genbank files as there were queried accessions
+    if consistent:
+        logging.info('Accessions and GenBank files count are consistent')
+        split = GenBankSplitter(result, accessions)
+        GenBankWriter(split, download_dir)
+    else:
+        logging.warning('One or more accessions in batch does not link a valid GenBank. Attempting download of this batch one by one')
+        for accession in accessions:
+            script = "esearch -db nuccore -query " + accession + " | efetch -format genbank"
+            result = None
+            result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
+            if len(result) < 80: # Arbitrary lower bound of calling a GenBank file non-empty
+                logging.info(f'Accession {accession} does not link any GenBank file. This might have triggered the warning')
+                time.sleep(1)
+                continue # Do not write this empty file
+            with open(os.path.join(download_dir, accession+'.gb'), 'w') as w:
+                w.write(result)
+
+def GenBankWriter(dictionary, genbank_dir):
+    for key, item in dictionary.items():
+        if len(item) > 0: # Write GenBank file if not empty
+            with open(os.path.join(genbank_dir, key+'.gb'), 'w') as w:
+                print(*item, sep='\n', file=w)
+        else:
+            logging.warning(f'Entry with accession {key} has an empty GenBank file.')
+
+def GenBankSplitter(string, accessions):
+    i = -1
+    lines = string.split('\n') # Split the large text returned by subprocess
+    if not len(lines):
+        logging.warning('Subprocess did not capture output')
+    d = {}
+    locus = None
+    for line in lines:
+        if line.startswith('LOCUS '):
+            i += 1
+            locus = accessions[i] 
+            d[locus] = []
+        if locus:
+            d[locus].append(line)
+    return d
+
+def CreateDirectory(directory_path):
+    try:
+        os.mkdir(directory_path)
+    except FileExistsError:
+        pass # Ignore if already present
+    except: # Anything else produces error, return status 1
+        logging.error(f'Cannot create directory {directory_path}')
+        return 1
+    logging.info(f'Successfully created/updated directory at {directory_path}')
+    return 0
+
+def DownloadInternetFile(url, output):
+    from subprocess import Popen, PIPE
+    def run_cmd(cmd):
+        process = Popen(cmd, stdout=PIPE, stderr=PIPE)
+        stdout, stderr = process.communicate()
+    logging.info(f'Downloading internet file {url}')
+    cmd = ["wget", url, "--no-check-certificate", "-O", output]
+    run_cmd(cmd)
+    if not os.path.isfile(output):
+        return 1
+    return 0
+
+def Batchata(data):
+    size = len(data)
+    for i in range(0, size, params['-b']):
+        yield data[i:i + params['-b']]
+
+def GenBank2Info(file):
+    info = {'molecule_type':None, 'topology':None, 'date':None, 'host':None, 'country':None}
+    for gb in SeqIO.parse(file, 'gb'):
+        molecule_type = gb.annotations.get('molecule_type', None)
+        if molecule_type:
+            info['molecule_type'] = molecule_type
+        topology = gb.annotations.get('topology', None)
+        if topology:
+            info['topology'] = topology
+        date = gb.annotations.get('date', None)
+        if date:
+            info['date'] = date
+        host = gb.features[0].qualifiers.get('host', None)
+        if host==None:
+            host = gb.features[0].qualifiers.get('lab_host', None)
+        if host:
+            info['host'] = host[0]
+        country = gb.features[0].qualifiers.get('country', None)
+        if country:
+            info['country'] = country[0]
+        return info
+
+def GenBank2Seq(file):
+    for gb in SeqIO.parse(file, 'gb'):
+        if gb.seq.defined:
+            return gb.seq
+        else:
+            logging.warning('Could not read sequence from GenBank file directly. Downloading it separately.')
+            filename = os.path.basename(file).replace('.gb', '') # Files are named <accession> + <.gb>
+            script = "esearch -db nuccore -query " + filename + " | efetch -format fasta"
+            result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
+            if not result.startswith('>'):
+                logging.warning(f'Could not download sequence for accession {filename}')
+                return None
+            seq = ''.join([line for line in result.split('\n') if not line.startswith('>')])
+            return SeqIO.SeqRecord(seq).seq
+
+if __name__ == '__main__':
+    sys.stderr.write('\n(v) This is %s version %s\n\n' %(PROGRAM, VERSION))
+    args = Args()
+    params = args.Parse()
+    vtu = VTU(params['-i'])
+    vtu.Funclist[params['subcommand']]()
