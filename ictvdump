@@ -5,9 +5,9 @@ Code by:
     [+] Christopher Riccardi, PhD Student at University of Florence (Italy) https://www.bio.unifi.it/vp-175-our-research.html
         Currently Guest Researcher at Sun Lab, University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
         PhD Project Title: Computational modelling of omics data from condition-dependent datasets.
-        Advisor: Marco Fondi (U Florence)
+        Advisor: Prof. Marco Fondi (U Florence)
     [+] Rachel Yuqiu Wang, PhD Student at University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
-        Advisor: Fengzhu Sun (USC)
+        Advisor: Prof. Fengzhu Sun (USC)
 """
 from multiprocessing import Pool
 from Bio import SeqIO
@@ -391,9 +391,9 @@ class VTU():
         ## Can read it again using df=pd.read_pickle('feature_matrix.pkl')
 
         if params['-c']:
-            shutil.remove(self._markers_dir)
-            shutil.remove(self._orfs_dir)
-            shutil.remove(self._tmp_dir)
+            shutil.rmtree(self._markers_dir)
+            shutil.rmtree(self._orfs_dir)
+            shutil.rmtree(self._tmp_dir)
 
         status = 1 - os.path.isfile(self._feature_matrix)
         logging.info(f'Finished with status: {status}')
