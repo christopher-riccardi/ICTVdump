@@ -268,8 +268,8 @@ class VTU():
                                     'Family':families, 'Subfamily':subfamilies, 'Genus':genera, 'Subgenus':subgenera, 'Species':species})
         exemplars.to_csv(self._exemplars_file, compression='gzip', sep='\t', index=False)
         if params['-c']:
-            shutil.rmtree(self._download_dir)
-            shutil.rmtree(self._index_dir)
+            shutil.rmtree(self._download_dir, ignore_errors=True)
+            shutil.rmtree(self._index_dir, ignore_errors=True)
         logging.info(f'Big table written at {self._exemplars_file}. Now filtering and writing FASTA.')
         logging.info('Note that these sequences will be grouped by viral sort, and the segmented viruses concatenated.')
         status = self.PreprocessExemplars()
@@ -391,9 +391,9 @@ class VTU():
         ## Can read it again using df=pd.read_pickle('feature_matrix.pkl')
 
         if params['-c']:
-            shutil.rmtree(self._markers_dir)
-            shutil.rmtree(self._orfs_dir)
-            shutil.rmtree(self._tmp_dir)
+            shutil.rmtree(self._markers_dir, ignore_errors=True)
+            shutil.rmtree(self._orfs_dir, ignore_errors=True)
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
         status = 1 - os.path.isfile(self._feature_matrix)
         logging.info(f'Finished with status: {status}')
@@ -446,7 +446,7 @@ class VTU():
             #data = {k: v for d in results for k, v in d.items()}
         shutil.make_archive(self._llr_dir, 'zip', self._llr_dir)
         if params['-c']:
-            shutil.rmtree(self._llr_dir)
+            shutil.rmtree(self._llr_dir, ignore_errors=True)
         status = 1 - os.path.isfile(self._llr_dir+'.zip')
         logging.info(f'Finished with status: {status}')
 
