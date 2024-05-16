@@ -492,8 +492,8 @@ class VTU():
         # Now concatenate, and update old data frame
         df = pd.concat(tmp)
         
-        # set a lower bound on genome size (about the size of a gene, 1000bp)
-        df = df[(df['length'])>1000]
+        # Optionally, set a lower bound on genome size (about the size of a gene, 1000bp)
+        #df = df[(df['length'])>1000]
         # we noticed some proviruses in which the proviral boundaries are not specified
         # this leads to entries with entire bacterial genomes and need to be removed
         # look at the largest entries first
