@@ -1,14 +1,14 @@
 # ICTVdump
 Download viral genomes by connecting to the latest ICTV Virus Metadata Resource (VMR)
 ## Important notice  
-We've pre-run this pipeline and stored the 'ready-to-use' sequences on Zenodo. Users who wish to swiftly access the pre-computed data can do so by downloading the following two files:   
+We've pre-run this pipeline and stored the 'ready-to-use' sequences on [Zenodo](https://zenodo.org/records/11218054). Users who wish to swiftly access the pre-computed data can do so by downloading the following two files:   
 <br>
-[Exemplar_sorts.fa.gz](https://zenodo.org/records/11183043/files/exemplar_sorts.fa.gz?download=1) Viral genomic DNA sequences grouped by 'sort'. Segmented genomes are concatenated. FASTA headers are formatted as such: '>sort\_{sort identifier}\_{number of concatenated segments}\_{genome length (bp)}'  
-[Exemplar_sorts.tsv.gz](https://zenodo.org/records/11183043/files/exemplar_sorts.tsv.gz?download=1) ICTV taxonomy for the above. The column 'header' links the FASTA headers for easy access.  
+[Exemplar_sorts.fa](https://zenodo.org/records/11218054/files/exemplar_sorts.fa?download=1) Viral genomic DNA sequences grouped by 'sort'. Multipartite genomes are concatenated. FASTA headers are formatted as such: '>sort\_{sort identifier}\_{number of concatenated segments}\_{genome length (bp)}'  
+[Exemplar_sorts.tsv](https://zenodo.org/records/11218054/files/exemplar_sorts.tsv?download=1) ICTV taxonomy for the above. The column 'header' links the FASTA headers for easy access.  
 
 <br>
 
-For convenience, we also included the full dataset, i.e., genomic sequences + metadata not grouped by viral sort: ([exemplars.tsv.gz](https://zenodo.org/records/11183043/files/exemplars.tsv.gz?download=1)). The precalculated LLRs for taxonomic prediction (see paper) are stored in the compressed folder [LLR.zip](https://zenodo.org/records/11183043/files/LLR.zip?download=1).  
+For convenience, we also included the full dataset, i.e., genomic sequences + metadata not grouped by viral sort: ([exemplars.tsv.gz](https://zenodo.org/records/11218054/files/exemplars.tsv.gz?download=1)). The precalculated LLRs for taxonomic prediction (see paper) are stored in the compressed folder [LLR.zip](https://zenodo.org/records/11218054/files/LLR.zip?download=1).  
 
 ## Introduction  
 This repository offers the source code for downloading exemplar viral genomes from the NCBI, with taxonomy curated by the ICTV. As stated in https://ictv.global/vmr, the ICTV *chooses an exemplar virus for each species and the VMR provides a list of these exemplars (...) and includes the GenBank accession number for the genomic sequence of the isolate as well as the virus name, isolate designation, suggested abbreviation, genome composition, and host source*.  
@@ -39,8 +39,4 @@ The recommended way to install the dependencies is through conda/mamba on Linux 
 ```conda create -n ictv -c conda-forge -c bioconda biopython openpyxl numpy pandas prodigal-gv mmseqs2 -y```  
 with the inclusion of [Entrez Direct](https://www.ncbi.nlm.nih.gov/books/NBK179288/) in a separate step:  
 ```sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)"```.  
-
-
-
-
 
