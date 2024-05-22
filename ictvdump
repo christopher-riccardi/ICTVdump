@@ -130,6 +130,8 @@ class VTU():
         self._flagged_file = os.path.join(self._working_directory, 'flagged.txt')
         self._genomad_gzipped = os.path.join(self._working_directory, 'genomad_msa_v1.0.tar.gz')
         self._genomad_markers = os.path.join(self._markers_dir, 'genomad_markers.faa')
+        self._matched_markers_txt = os.path.join(self._working_directory, 'matched_markers.txt')
+        self._matched_markers_fasta = os.path.join(self._working_directory, 'matched_markers.faa')
         self._mmseqs_m8 = os.path.join(self._orfs_dir, 'mmseqs_output.m8')
         self._feature_matrix = os.path.join(self._working_directory, 'feature_matrix.pkl')
 
@@ -291,7 +293,7 @@ class VTU():
         tf = tarfile.open(self._genomad_gzipped)
         tf.extractall(self._markers_dir)
         tf.close()
-        genomad_markers = glob.glob(self._markers_dir + "/*/*V*.faa") ## 161,862 markers with medium to high specificity for viruses
+        genomad_markers = glob.glob(self._markers_dir + "/*/*V*.faa") ## markers with medium to high specificity for viruses
         if len(genomad_markers) == 0:
             logging.error('No markers were extracted.')
             sys.exit(1)
@@ -390,8 +392,19 @@ class VTU():
         feature_matrix.to_pickle(self._feature_matrix)
         ## Can read it again using df=pd.read_pickle('feature_matrix.pkl')
 
+        # get the data that matched
+        matched_markers = feature_matrix.columns.values
+        np.savetxt(self._matched_markers_txt, matched_markers, fmt="%s")
+        matched_markers = set(sorted(matched_markers))
+        d = Seq2Dict(self._genomad_markers)
+        with open(self._matched_markers_fasta, 'w') as f:
+            for k, v in d.items():
+                if k.split('_')[2].rstrip() in matched_markers:
+                    print(k, file=f)
+                    print(v, file=f)
+
         if params['-c']:
-            shutil.rmtree(self._markers_dir, ignore_errors=True)
+            #shutil.rmtree(self._markers_dir, ignore_errors=True)
             shutil.rmtree(self._orfs_dir, ignore_errors=True)
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
@@ -444,7 +457,19 @@ class VTU():
         with Pool(int(params['-t'])) as p:
             results = p.map(self.precalculate_LLR_background_by_genus, union)
             #data = {k: v for d in results for k, v in d.items()}
-        shutil.make_archive(self._llr_dir, 'zip', self._llr_dir)
+        
+        zerodir = os.path.join(self._llr_dir, '0')
+
+        if CreateDirectory(zerodir) == 1:
+            sys.exit(1)
+
+        ## Copy additional data into the LLR archive
+        src, dst = self._matched_markers_txt, os.path.join(zerodir, os.path.basename(self._matched_markers_txt))
+        shutil.copy(src, dst)
+        src, dst = self._matched_markers_fasta, os.path.join(zerodir, os.path.basename(self._matched_markers_fasta))
+        shutil.copy(src, dst)        
+
+        shutil.make_archive(self._llr_dir, 'xztar', self._llr_dir)
         if params['-c']:
             shutil.rmtree(self._llr_dir, ignore_errors=True)
         status = 1 - os.path.isfile(self._llr_dir+'.zip')
@@ -454,6 +479,9 @@ class VTU():
         import numpy as np
         outdir = os.path.join(self._llr_dir, genus)
         outfile_precalc = os.path.join(outdir, 'genus_LLR.precalc') # this will be the general precalculated file
+
+        #if os.path.isfile(outfile_precalc): return
+
 
         ## Nc in genera since we use ALL of the rest in the background (denominator)
         df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in self.genera])
@@ -549,7 +577,7 @@ def Seq2Dict(file):
             ftells.append(i+1)
     ftells.append(i+2)
     for i, header in enumerate(list(d.keys())):
-        d[header] = ''.join(lines[ftells[i]:ftells[i+1]-2])
+        d[header] = ''.join(lines[ftells[i]:ftells[i+1]-1])
     return d
 
 def Excel2Index(vmr_spreadsheet):
@@ -562,9 +590,19 @@ def Excel2Index(vmr_spreadsheet):
         accessions = accessions.replace(' ', '')
         accessions = accessions.split(';')
         for accession in accessions:
+            if not accession: continue
             d_accession, d_partition, d_start, d_end = ParseString(accession) # ParseString gets info from 'Virus GENBANK accession' column
-            d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
-            index.append(d_str)
+            if len(d_accession) < 6: continue
+            ## Still could contain '-'
+            if '-' not in d_accession:
+                d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
+                index.append(d_str)
+            else:
+                accessions = d_accession.split('-')
+                for d_accession in accessions:
+                    if d_accession.startswith('RNA') or d_accession.startswith('dsRNA'): continue
+                    d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
+                    index.append(d_str)
     return index
 
 def ParseString(s):
@@ -595,7 +633,7 @@ def EntrezRunner(batch, download_dir):
         logging.warning('One or more accessions in batch does not link a valid GenBank. Attempting download of this batch one by one')
         for accession in accessions:
             script = "esearch -db nuccore -query " + accession + " | efetch -format genbank"
-            result = None
+            result = ""
             result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
             if len(result) < 80: # Arbitrary lower bound of calling a GenBank file non-empty
                 logging.info(f'Accession {accession} does not link any GenBank file. This might have triggered the warning')
