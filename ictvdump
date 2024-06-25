@@ -97,7 +97,7 @@ class Args():
         parser.add_argument(
         '-i', '--input', dest='input', required=True, help='Name of working directory created by ictvdump download')        
         parser.add_argument(
-        '-t', '--threads', dest='threads', default=1, help='Number of threads for precalculating LLRs in multithreading (1)')        
+        '-t', '--threads', dest='threads', default=1, help='Number of threads for precalculating LLs in multithreading (1)')        
         parser.add_argument(
             '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
         args = parser.parse_args()
@@ -118,7 +118,7 @@ class VTU():
         self._markers_dir = os.path.join(self._working_directory, 'markers')
         self._orfs_dir = os.path.join(self._working_directory, 'ORFs')
         self._tmp_dir = os.path.join(self._working_directory, 'tmp')
-        self._llr_dir = os.path.join(self._working_directory, 'LLR')
+        self._ll_dir = os.path.join(self._working_directory, 'LL')
 
         ## Files
         self._vmr_spreadsheet = os.path.join(self._vmr_dir, 'vmr_spreadsheet.xlsx')
@@ -134,6 +134,7 @@ class VTU():
         self._matched_markers_fasta = os.path.join(self._working_directory, 'matched_markers.faa')
         self._mmseqs_m8 = os.path.join(self._orfs_dir, 'mmseqs_output.m8')
         self._feature_matrix = os.path.join(self._working_directory, 'feature_matrix.pkl')
+        self._precalculated = os.path.join(self._working_directory, 'precalculated.pkl')
 
         ## Other
         self.Funclist = [self.download_subcommand, self.match_subcommand, self.precalculate_subcommand]
@@ -412,7 +413,8 @@ class VTU():
         logging.info(f'Finished with status: {status}')
 
     def precalculate_subcommand(self):
-        if CreateDirectory(self._llr_dir) == 1:
+        import pickle
+        if CreateDirectory(self._ll_dir) == 1:
             sys.exit(1)
         try:
             self.fm = pd.read_pickle(self._feature_matrix)
@@ -426,75 +428,41 @@ class VTU():
             sys.exit(1)
         survived = self.fm.index
         self.es = self.es[self.es['header'].isin(survived)] ## keep exemplars for which there are genomes now
-        gen_25_up = [] # n > 24
-        gen_10_25 = [] # n in [10, 25)
-        gen_5_10 = [] # n in [5, 10)
-        gen_3_5 = [] # n in [3, 5)
-        self.genera = sorted(self.es['Genus'].dropna().unique())
-        for genus in self.genera:
-            sub_len = self.es.loc[self.es['Genus'] == genus, 'header'].isin(self.fm.index).sum()
-            if sub_len > 24:
-                gen_25_up.append(genus)
-            if 9 < sub_len < 25:
-                gen_10_25.append(genus)
-            if 4 < sub_len < 10:
-                gen_5_10.append(genus)
-            if 2 < sub_len < 5:
-                gen_3_5.append(genus)
-        union = sorted(list(set(gen_25_up + gen_10_25 + gen_5_10 + gen_3_5)))
 
-        print(f"Dataset gen_25_up contains {len(gen_25_up)} genera or {self.es.loc[(self.es['Genus'].isin(gen_25_up)), 'Species'].unique().size} distinct species")
-        print(f"Dataset gen_10_25 contains {len(gen_10_25)} genera or {self.es.loc[(self.es['Genus'].isin(gen_10_25)), 'Species'].unique().size} distinct species")
-        print(f"Dataset gen_5_10 contains {len(gen_5_10)} genera or {self.es.loc[(self.es['Genus'].isin(gen_5_10)), 'Species'].unique().size} distinct species")
-        print(f"Dataset gen_3_5 contains {len(gen_3_5)} genera or {self.es.loc[(self.es['Genus'].isin(gen_3_5)), 'Species'].unique().size} distinct species")
-        print(f"The union of these contains {len(union)} genera or {self.es.loc[(self.es['Genus'].isin(union)), 'Species'].unique().size} distinct species")
-        print(f"The union dataset represents {self.es.loc[(self.es['Genus'].isin(union)), 'Species'].unique().size / self.es['Species'].unique().size * 100:3.2f} % of all ICTV species")
-        print(f"Also, the union dataset represents {len(union) / len(self.genera) * 100:3.2f} % of all ICTV genera")
+        genera = sorted(self.es['Genus'].dropna().unique())
+        self.fm = self.fm.loc[self.es.loc[(self.es['Genus'].isin(genera)), 'header']]
+        self.fm = self.fm[self.fm.columns[self.fm.sum() > 0]]
+        self.df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in genera])
 
-        for genus in union:
-            if CreateDirectory(os.path.join(self._llr_dir, genus)) == 1:
-                sys.exit(1)
-        with Pool(int(params['-t'])) as p:
-            results = p.map(self.precalculate_LLR_background_by_genus, union)
-            #data = {k: v for d in results for k, v in d.items()}
-        
-        zerodir = os.path.join(self._llr_dir, '0')
+        precalculated = {}
+        p1 = Pool(int(params['-t']))
+        results = p1.map(self.precalculate_LL_background_by_genus, genera)
+        for elem in results:
+            for k, v in elem.items(): precalculated[k] = v
+        with open(self._precalculated, 'wb') as handle:
+            pickle.dump(precalculated, handle) # Write precalculated to file for future use
 
-        if CreateDirectory(zerodir) == 1:
-            sys.exit(1)
 
-        ## Copy additional data into the LLR archive
-        src, dst = self._matched_markers_txt, os.path.join(zerodir, os.path.basename(self._matched_markers_txt))
+        ## Copy additional data into the LL archive
+        src, dst = self._matched_markers_txt, os.path.join(self._ll_dir, os.path.basename(self._matched_markers_txt))
         shutil.copy(src, dst)
-        src, dst = self._matched_markers_fasta, os.path.join(zerodir, os.path.basename(self._matched_markers_fasta))
+        src, dst = self._matched_markers_fasta, os.path.join(self._ll_dir, os.path.basename(self._matched_markers_fasta))
+        shutil.copy(src, dst)        
+        src, dst = self._precalculated, os.path.join(self._ll_dir, os.path.basename(self._precalculated))
         shutil.copy(src, dst)        
 
-        shutil.make_archive(self._llr_dir, 'xztar', self._llr_dir)
+        shutil.make_archive(self._ll_dir, 'xztar', self._ll_dir)
         if params['-c']:
-            shutil.rmtree(self._llr_dir, ignore_errors=True)
-        status = 1 - os.path.isfile(self._llr_dir+'.zip')
+            shutil.rmtree(self._ll_dir, ignore_errors=True)
+        status = 1 - os.path.isfile(self._ll_dir+'.tar.xz')
         logging.info(f'Finished with status: {status}')
 
-    def precalculate_LLR_background_by_genus(self, genus):
-        import numpy as np
-        outdir = os.path.join(self._llr_dir, genus)
-        outfile_precalc = os.path.join(outdir, 'genus_LLR.precalc') # this will be the general precalculated file
-
-        #if os.path.isfile(outfile_precalc): return
-
-
-        ## Nc in genera since we use ALL of the rest in the background (denominator)
-        df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in self.genera])
-
-        ## essentially precalculate both cases: when the ith marker is present and when it is absent
-        numerator = df.loc[(df.index==genus)]
-        denominator = np.apply_along_axis(lambda col: PositiveMean(col), axis=0, arr=df.values)
-
-        Ig1_vals = np.array([np.log(i) for i in  (((numerator)+self.eps) / ((denominator)+self.eps)).values[0]])
-        Ig0_vals = np.array([np.log(i) for i in  (((1-numerator)+self.eps) / ((1-denominator)+self.eps)).values[0]])
-
+    def precalculate_LL_background_by_genus(self, genus):
+        f_c = df.loc[(df.index==genus)]
+        Ig1_vals = np.log((f_c+eps).values[0])
+        Ig0_vals = np.log(((1-f_c)+eps).values[0])
         stacked = np.vstack((Ig0_vals, Ig1_vals))
-        np.savetxt(outfile_precalc, stacked, delimiter='\t', fmt='%4.3f')
+        return {genus : stacked}
 
     def PreprocessExemplars(self):
         import numpy as np
