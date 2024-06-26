@@ -218,7 +218,7 @@ class VTU():
             d_genome_composition, d_Realm, d_Subrealm, d_Kingdom, d_Subkingdom, \
             d_Phylum, d_Subphylum, d_Class, d_Subclass, d_Order, d_Suborder, \
             d_Family, d_Subfamily, d_Genus, d_Subgenus, d_Species = row['Virus name(s)'].values[0], \
-            row['Exemplar or additional isolate'].values[0], row['Host source'].values[0], row['Genome coverage'].values[0], row['Genome composition'].values[0] ,\
+            row['Exemplar or additional isolate'].values[0], row['Host Source'].values[0], row['Genome coverage'].values[0], row['Genome composition'].values[0] ,\
             row['Realm'].values[0], row['Subrealm'].values[0], row['Kingdom'].values[0], row['Subkingdom'].values[0], \
             row['Phylum'].values[0], row['Subphylum'].values[0], row['Class'].values[0], row['Subclass'].values[0], \
             row['Order'].values[0], row['Suborder'].values[0], row['Family'].values[0], row['Subfamily'].values[0],\
@@ -553,7 +553,7 @@ def Excel2Index(vmr_spreadsheet):
     Try to keep the fields consistent. We scanned every VMR release and adjusted our script to make it compatible with every column field description.
     We want the fields to follow this conventional structure:
     ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 
-    'Genus', 'Host source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 
+    'Genus', 'Host Source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 
     'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 
     'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']
     """
