@@ -129,7 +129,7 @@ class VTU():
         self._exemplar_orfs = os.path.join(self._orfs_dir, 'exemplar_sorts.faa')
         self._exemplar_sorts_data = os.path.join(self._working_directory, 'exemplar_sorts.tsv')
         self._flagged_file = os.path.join(self._working_directory, 'flagged.txt')
-        self._genomad_gzipped = os.path.join(self._working_directory, 'genomad_msa_v1.0.tar.gz')
+        self._genomad_gzipped = os.path.join(self._working_directory, 'genomad_msa_v1.7.tar.gz')
         self._genomad_markers = os.path.join(self._markers_dir, 'genomad_markers.faa')
         self._matched_markers_txt = os.path.join(self._working_directory, 'matched_markers.txt')
         self._matched_markers_fasta = os.path.join(self._working_directory, 'matched_markers.faa')
@@ -141,8 +141,9 @@ class VTU():
         self.Funclist = [self.download_subcommand, self.match_subcommand, self.precalculate_subcommand]
         self.fm = None
         self.es = None
+        self.df = None
         self.genera = None
-        self.eps = 0.001   
+        self.eps = 0.01   
         ## Initialize working directory
         if CreateDirectory(self._working_directory) == 1:
             sys.exit(1)
@@ -288,7 +289,7 @@ class VTU():
         if CreateDirectory(self._markers_dir) == 1:
             sys.exit(1)
         if DownloadInternetFile(params['-u'], self._genomad_gzipped) == 1:
-            logging.error('Cannot download genomad_msa_v1.0.tar.gz file from Zenodo. Are you connected to the internet? Is the URL still valid?')
+            logging.error('Cannot download genomad_msa_v1.7.tar.gz file from Zenodo. Are you connected to the internet? Is the URL still valid?')
             sys.exit(1)
         logging.info('Extracting markers tar file')
         tf = tarfile.open(self._genomad_gzipped)
@@ -458,9 +459,9 @@ class VTU():
         logging.info(f'Finished with status: {status}')
 
     def precalculate_LL_background_by_genus(self, genus):
-        f_c = df.loc[(df.index==genus)]
-        Ig1_vals = np.log((f_c+eps).values[0])
-        Ig0_vals = np.log(((1-f_c)+eps).values[0])
+        f_c = self.df.loc[(self.df.index==genus)]
+        Ig1_vals = np.log((f_c+self.eps).values[0])
+        Ig0_vals = np.log(((1-f_c)+self.eps).values[0])
         stacked = np.vstack((Ig0_vals, Ig1_vals))
         return {genus : stacked}
 
