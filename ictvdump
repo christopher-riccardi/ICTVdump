@@ -12,6 +12,7 @@ Code by:
 from multiprocessing import Pool
 from Bio import SeqIO
 import pandas as pd
+import numpy as np
 import subprocess
 import argparse
 import logging
@@ -281,7 +282,6 @@ class VTU():
     def match_subcommand(self):
         import tarfile, glob
         from subprocess import Popen, PIPE
-        import numpy as np
 
         if CreateDirectory(self._orfs_dir) == 1:
             sys.exit(1)
@@ -465,7 +465,6 @@ class VTU():
         return {genus : stacked}
 
     def PreprocessExemplars(self):
-        import numpy as np
         df = pd.read_csv(self._exemplars_file, compression='gzip', sep='\t')
         # group by sorts first
         tmp = []
@@ -526,12 +525,6 @@ class VTU():
         if not os.path.isfile(self._exemplar_sorts_fasta) or not os.path.isfile(self._exemplar_sorts_data):
             return 1
         return 0
-
-def PositiveMean(col):
-    import numpy as np
-    pos_frac = col[col > 0]
-    if pos_frac.size == 0: return 0
-    return 1-(1 / np.sqrt(np.power(2, pos_frac).sum()))
 
 def Seq2Dict(file):
     d = {}
