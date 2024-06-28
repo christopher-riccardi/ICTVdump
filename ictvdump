@@ -123,6 +123,7 @@ class VTU():
 
         ## Files
         self._vmr_spreadsheet = os.path.join(self._vmr_dir, 'vmr_spreadsheet.xlsx')
+        self._vmr_table = os.path.join(self._vmr_dir, 'vmr_table.tsv')
         self._index_file = os.path.join(self._index_dir, 'index.json')
         self._exemplars_file = os.path.join(self._working_directory, 'exemplars.tsv.gz')
         self._exemplar_sorts_fasta = os.path.join(self._working_directory, 'exemplar_sorts.fa')
@@ -159,7 +160,7 @@ class VTU():
         if not os.path.isdir(self._vmr_dir) or not os.path.isfile(self._vmr_spreadsheet):
             logging.error('Something is wrong with I/O of your main working directory')
             sys.exit(1)
-        index = Excel2Index(self._vmr_spreadsheet)
+        index, df = Excel2Index(self._vmr_spreadsheet)
         with open(self._index_file, 'w') as w:
             json.dump(index, w)
         try:
@@ -173,7 +174,7 @@ class VTU():
         if CreateDirectory(self._download_dir) == 1:
             sys.exit(1)
         index = json.load(open(self._index_file))
-        logging.info('Proceeding with standard full download')
+        logging.info('Proceeding with Edirect download')
         [EntrezRunner(batch, self._download_dir) for batch in Batchata(index)]
 
         from Bio.SeqUtils import gc_fraction
@@ -181,9 +182,8 @@ class VTU():
             logging.error('Something is wrong with I/O of your main working directory')
             sys.exit(1)
         logging.info('Extracting data from GenBank files, please wait')
-        flags, files, index, df = [], \
-            [file.replace('.gb', '') for file in os.listdir(self._download_dir)], json.load(open(self._index_file)), \
-                pd.read_excel(self._vmr_spreadsheet) # Load accessions and index
+        flags, files, index = [], \
+            [file.replace('.gb', '') for file in os.listdir(self._download_dir)], json.load(open(self._index_file))# Load accessions and index
         flags = [data['accession'] for data in index if data['accession'] not in files] # Files in the self._download_dir are non-empty
         accessions, sorts, virus_names, hosts, hosts_VMR, partitions, \
         molecule_types, genome_compositions, topologies, genome_coverages, \
@@ -206,8 +206,6 @@ class VTU():
                 continue # Flag and skip if we cannot retrieve sequence
             d_gc_fraction=gc_fraction(seq) # Calc GC content of this object
             d_length=len(seq)
-            if data['start']: # Provirus-like get handled here
-                seq=seq[int(data['start']):int(data['end'])]
             d_sequence += seq # Format header + sequence
 
             ## Handle more info
@@ -435,14 +433,15 @@ class VTU():
         self.fm = self.fm[self.fm.columns[self.fm.sum() > 0]]
         self.df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in genera])
 
-        precalculated = {}
-        p1 = Pool(int(params['-t']))
-        results = p1.map(self.precalculate_LL_background_by_genus, genera)
+        precalculated, results = {}, []
+        logging.info(f'Beginning multiprocessing, using {params["-t"]} threads')
+        with Pool(int(params['-t'])) as p1:
+            results = p1.map(self.precalculate_LL_background_by_genus, genera)
+        logging.info('Done. Collecting results')
         for elem in results:
             for k, v in elem.items(): precalculated[k] = v
         with open(self._precalculated, 'wb') as handle:
             pickle.dump(precalculated, handle) # Write precalculated to file for future use
-
 
         ## Copy additional data into the LL archive
         src, dst = self._matched_markers_txt, os.path.join(self._ll_dir, os.path.basename(self._matched_markers_txt))
@@ -487,24 +486,7 @@ class VTU():
             tmp.append(s)
         # Now concatenate, and update old data frame
         df = pd.concat(tmp)
-        
-        # Optionally, set a lower bound on genome size (about the size of a gene, 1000bp)
-        #df = df[(df['length'])>1000]
-        # we noticed some proviruses in which the proviral boundaries are not specified
-        # this leads to entries with entire bacterial genomes and need to be removed
-        # look at the largest entries first
-        df[(df['length']>1e06)]
-        # after looking up the top 22 on the NCBI, we found that the following genomes are entirely bacterial
-        #AE006468 
-        #CP015418 
-        #CP000031 
-        #CP000830 
-        #CP001312
-        #CP001357
-        #BX897699
-        # so remove these
-        bacterial = ['AE006468', 'CP015418', 'CP000031', 'CP000830', 'CP001312', 'CP001357', 'BX897699']
-        df = df[~(df['accession'].isin(bacterial))]
+
         # write sequence to file
         with open(self._exemplar_sorts_fasta, 'w') as f:
             for _, row in df.iterrows():
@@ -543,93 +525,117 @@ def Seq2Dict(file):
     return d
 
 def Excel2Index(vmr_spreadsheet):
-    """
-    Try to keep the fields consistent. We scanned every VMR release and adjusted our script to make it compatible with every column field description.
-    We want the fields to follow this conventional structure:
-    ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 
-    'Genus', 'Host Source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 
-    'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 
-    'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']
-    """
+    import re
+    def spot_old_format(string):
+        old_format = re.compile(r'^[A-Z]\d{5}$') ## one letter + five digits (pre 2004)
+        if old_format.match(string):
+            return string
+        return None
+    def spot_intermediate_format(string):
+        intermediate_format = re.compile(r'^[A-Z]{2}\d{6}$') ## two letters + six digits
+        if intermediate_format.match(string):
+            return string
+        return None
+    def spot_current_format(string):
+        current_format = re.compile(r'^[A-Z]{4}\d{8}$') ## four letters + eight digits (post 2004)
+        if current_format.match(string):
+            return string
+        return None
+    known_typos = {'ON381478-ON381479':['ON381478','ON381479'], 'HQHQ847905':['HQ847905'], 'EU7257772':['EU725772'], 'LCM141331':['KX884774'], 'SKR870013':['KR870013'], 'AF4362513':['AF362513'], 'JX4782635':['JX478263']} # known typos due to manual annotation, we salvage those by replacing with a list containing the polished accession
+    known_invalid = {'JAEILC010000038', 'GECV01031551', 'AE006468', 'CP015418', 'CP000031', 'CP000830', 'CP001312', 'CP001357', 'BX897699', 'AUXO01792325', 'OQ735257', 'QQ198719', 'QQ198717', 'QQ198718'} # GenBank accessions that have been decommissioned, or that do not contain the virus
     df = pd.read_excel(vmr_spreadsheet) # Requires openpyxl installed
-    if sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Host source':'Host Source'})
-    elif sorted(df.columns) == ['Exemplar or additional isolate ', 'Family', 'Genus', 'Order', 'Sort', 'Species', 'Study Group approved', 'Subfamily', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name(s)', 'Virus sequence complete']:
-        df = df.rename(columns={'Exemplar or additional isolate ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)'})
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    elif sorted(df.columns) == ['Class', 'Exemplar (E) or additional isolate (A)', 'Family', 'Genus', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 'Study Group approved', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name (s)', 'Virus name abbreviation (s)', 'Virus sequence complete']:
-        df = df.rename(columns={'Exemplar (E) or additional isolate (A)':'Exemplar or additional isolate'})
-        df[['Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Virus name abbreviation(s)', 'Virus name(s)']] = np.nan
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host Source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df[['Virus REFSEQ accession']] = np.nan
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host source', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Sort', 'Species', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Host source':'Host Source'})
-        df[['Isolate Sort', 'Virus REFSEQ accession']] = np.nan
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host Source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Species', 'Species Sort', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Species Sort':'Sort'})
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host_Source', 'Isolate Sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Species', 'Species Sort', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Host_Source':'Host Source', 'Species Sort':'Sort'})
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Isolate sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Species', 'Species sort', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
-        df[['Host Source']] = np.nan
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host/Source', 'Isolate sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Species', 'Species sort', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
-    elif sorted(df.columns) == ['Class', 'Exemplar or additional isolate', 'Family', 'Genome composition', 'Genome coverage', 'Genus', 'Host/Source', 'Isolate sort', 'Kingdom', 'Order', 'Phylum', 'Realm', 'Species', 'Species sort', 'Subclass', 'Subfamily', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm', 'Virus GENBANK accession', 'Virus REFSEQ accession 200319', 'Virus isolate designation', 'Virus name abbreviation(s)', 'Virus name(s)']:
-        df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort', 'Virus REFSEQ accession 200319':'Virus REFSEQ accession'})
-    elif sorted(df.columns) == ['Exemplar ', 'SG Appr', 'Type species', 'Unnamed: 15', 'Unnamed: 17', 'Unnamed: 6', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus designation', 'Virus name(s)', 'Virus sequence complete', 'family', 'genus', 'order', 'sort', 'species', 'subfamily']:
-        df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    elif sorted(df.columns) == ['Exemplar ', 'SG Appr', 'Type species', 'Unnamed: 16', 'Unnamed: 6', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus designation', 'Virus name(s)', 'Virus sequence complete', 'family', 'genus', 'order', 'sort', 'species', 'subfamily']:
-        df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    elif sorted(df.columns) == ['Exemplar ', 'SG Appr.', 'Type species', 'Unnamed: 6', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus designation', 'Virus name(s)', 'Virus sequence complete', 'family', 'genus', 'order', 'species', 'subfamily']:
-        df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'species':'Species', 'subfamily':'Subfamily'})
-        df['Sort'] = np.arange(df.shape[0]) + 1
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    elif sorted(df.columns) == ['Exemplar ', 'SG Appr', 'Type species', 'Unnamed: 6', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus designation', 'Virus name(s)', 'Virus name(s).1', 'Virus sequence complete', 'family', 'genus', 'order', 'sort', 'species', 'subfamily']:
-        df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    elif sorted(df.columns) == ['Exemplar or Additional ', 'SG Apprv', 'Type species', 'Unnamed: 16', 'Unnamed: 17', 'Unnamed: 6', 'Virus  name abbreviation(s)', 'Virus GENBANK accession', 'Virus REFSEQ accession', 'Virus designation', 'Virus name(s)', 'Virus sequence complete', 'family', 'genus', 'order', 'sort', 'species', 'subfamily']:
-        df = df.rename(columns={'Exemplar or Additional ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-        df[['Class', 'Genome composition', 'Genome coverage', 'Host Source', 'Isolate Sort', 'Kingdom', 'Phylum', 'Realm', 'Subclass', 'Subgenus', 'Subkingdom', 'Suborder', 'Subphylum', 'Subrealm']] = np.nan
-    if df['Sort'].unique().size != df.shape[0]:
+    df = df.loc[(~df['Virus GENBANK accession'].isna())]
+    df['Accessions'] = ""
+    removed = set()
+    for i, row in df.iterrows():
+        entries = []
+        accessions = []
+        matches = re.findall(r'[^a-zA-Z0-9]', row['Virus GENBANK accession'].rstrip())
+        if not matches: # not segmented nor containing special characters
+            entries.append(row['Virus GENBANK accession'].rstrip())
+        else:
+            line = re.sub(r'[ \t\n\r\f\v:;,+]+', '@', row['Virus GENBANK accession'].rstrip())
+            entries += line.split('@')
+        # 'entries' contains also prefixes and invalid accessions now, so parse it
+        # Loop several times, each time applying a different filter.
+        # Filter 1: by size
+        for entry in entries:
+            if len(entry) > 5:
+                accessions.append(entry)
+        entries = accessions.copy()
+        accessions = []
+        #Filter 2: by properly formatted
+        for entry in entries:
+            old_format = spot_old_format(entry[0:0+6])
+            intermediate_format = spot_intermediate_format(entry[0:0+8])
+            current_format = spot_current_format(entry[0:0+12])
+            if old_format: accessions.append(old_format)
+            elif intermediate_format: accessions.append(intermediate_format)
+            elif current_format: accessions.append(current_format)
+            else:
+                if known_typos.get(entry, None):
+                    accessions.append(entry)
+                else:
+                    removed.add(entry)
+        for entry in accessions:
+            if entry in known_invalid:
+                accessions.remove(entry)
+        if len(accessions) == 0: # accession(s) invalid, skip this sort since there is no info associated
+            df.loc[(df.index==row.name), 'Accessions'] = np.nan
+            continue
+        df.loc[(df.index==row.name), 'Accessions'] = ','.join(accessions)
+    # re-filter by NaN
+    df = df.loc[(~df['Accessions'].isna())]
+    df['Virus GENBANK accession'] = df['Accessions']
+    del df['Accessions']
+    if df.shape[0] == 0:
+        logging.error('Empty data frame, something went wrong with parsing the GenBank accession identifiers')
+    df = df.rename(columns={'Host source':'Host Source'})
+    df = df.rename(columns={'Exemplar or additional isolate ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)'})
+    df = df.rename(columns={'Exemplar (E) or additional isolate (A)':'Exemplar or additional isolate'})
+    df = df.rename(columns={'Host source':'Host Source'})
+    df = df.rename(columns={'Species Sort':'Sort'})
+    df = df.rename(columns={'Host_Source':'Host Source', 'Species Sort':'Sort'})
+    df = df.rename(columns={'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
+    df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
+    df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort', 'Virus REFSEQ accession 200319':'Virus REFSEQ accession'})
+    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'species':'Species', 'subfamily':'Subfamily'})
+    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+    df = df.rename(columns={'Exemplar or Additional ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+    required_columns = ['Sort','Isolate Sort','Realm','Subrealm','Kingdom','Subkingdom','Phylum','Subphylum','Class','Subclass','Order','Suborder','Family','Subfamily','Genus','Subgenus','Species','Exemplar or additional isolate','Virus name(s)','Virus name abbreviation(s)','Virus isolate designation','Virus GENBANK accession','Virus REFSEQ accession','Genome coverage','Genome composition','Host source']
+    for column in required_columns:
+        if column not in df.columns:
+            df[column] = np.nan
+    if df['Sort'].sum() == 0:
         logging.warning('"Sort" field not properly formatted. Coercing to np.arange(df.shape[0]), i.e., a progressive integer')
         df['Sort'] = np.arange(df.shape[0]) + 1
+    virus_identifiers = [str(elem[0])+'_'+str(elem[1]) for elem in zip(df['Sort'],df['Isolate Sort'])]
+    if len(virus_identifiers) != len(set(virus_identifiers)):
+        logging.warning('Attempted merging "Sort" with "Isolate Sort" fields but some values are not unique. Proceeding with adding a progressive integer instead of the "Sort", keeping the "Isolate Sort" intact')
+        virus_identifiers = []
+        isolate_sorts = list(df['Isolate Sort'])
+        value = 0
+        for i in range(len(isolate_sorts)):
+            if isolate_sorts[i]==1:
+                value += 1
+                virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
+            else:
+                virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
+    df['Sort'] = virus_identifiers
+    df = df.drop_duplicates(subset=['Sort'], keep='first') # At this point the data set is unique enough in terms of Sort. Remove the redundant rest (if present)
 
-    df = df[~df['Virus GENBANK accession'].isnull()] # Some records don't link GenBank accessions
     index = []
     for i, row in df.iterrows():  
         sort, accessions = row['Sort'], row['Virus GENBANK accession']
-        d_accession, d_sort, d_partition, d_start, d_end = None, sort, None, None, None
-        accessions = accessions.replace(' ', '')
-        accessions = accessions.split(';')
-        for accession in accessions:
-            if not accession: continue
-            d_accession, d_partition, d_start, d_end = ParseString(accession) # ParseString gets info from 'Virus GENBANK accession' column
-            if len(d_accession) < 6: continue
-            ## Still could contain '-'
-            if '-' not in d_accession:
-                d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
-                index.append(d_str)
-            else:
-                accessions = d_accession.split('-')
-                for d_accession in accessions:
-                    if d_accession.startswith('RNA') or d_accession.startswith('dsRNA'): continue
-                    d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition, 'start':d_start, 'end':d_end}
-                    index.append(d_str)
-    return index
-
-def ParseString(s):
-    ## Parse a single 'Virus GENBANK accession' record splitted string
-    s_accession, s_partition, s_start, s_end = None, None, None, None
-    if ':' in s:
-        s_partition = s.split(':')[0] 
-        s = s.split(':')[1:][0]
-    if '(' in s:
-        s_start, s_end = s.split('(')[1].split('.')[0], s.split('(')[1].split('.')[1].split(')')[0]
-        s = s.split('(')[0]
-    s_accession = s
-    return s_accession, s_partition, s_start, s_end
+        for j, accession in enumerate(accessions.split(',')):
+            d_accession = accession
+            d_sort = sort
+            d_partition = j
+            d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition}
+            index.append(d_str)
+    return index, df
 
 def EntrezRunner(batch, download_dir):
     ## Run Entrez Direct commands 'esearch' piped with 'efetch'
