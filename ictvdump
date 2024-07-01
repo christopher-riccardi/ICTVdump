@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+PROGRAM, VERSION='ictvdump', '0.1.0'
+print(f'This is {PROGRAM} v {VERSION}\n')
 """
-Code by:
-    [+] Christopher Riccardi, PhD Student at University of Florence (Italy) https://www.bio.unifi.it/vp-175-our-research.html
-        Currently Guest Researcher at Sun Lab, University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
-        PhD Project Title: Computational modelling of omics data from condition-dependent datasets.
-        Advisor: Prof. Marco Fondi (U Florence)
-    [+] Rachel Yuqiu Wang, PhD Student at University of Southern California, Los Angeles (USA) https://dornsife.usc.edu/profile/fengzhu-sun/
-        Advisor: Prof. Fengzhu Sun (USC)
+MIT License
+
+Copyright (c) 2024 Christopher Riccardi and Yuqiu Wang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 from multiprocessing import Pool
 from Bio import SeqIO
@@ -24,135 +39,45 @@ import os
 
 logging.basicConfig(format='%(asctime)s - %(funcName)s:%(lineno)d [%(levelname)s] %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
 PROGRAM, VERSION='ICTVdump', '0.1.0'
-class Args():
-    """
-    An argparse wrapper class for a customized utilization of command line options
-    """
-    def __init__(self):
-        self.args = {'subcommand':None, 
-                     '-i':None,
-                     '-u':None,
-                     '-b':None,
-                     '-m':None}
-        self._subcommands = ['download', 'match', 'precalculate']
-        args = sys.argv
-        args.remove(args[0]) # Remove script name from args
-        if not len(args): # Must have args
-            self.SubCommandError()
-        try:
-            self._choice = self._subcommands.index(args[0]) # Get subcommand index
-        except ValueError:
-            self.SubCommandError()
-        self.args['subcommand'] = self._choice
-        self.Funclist = [self.DownloadParser, self.MatchParser, self.PrecalculateParser]
 
-    def SubCommandError(self):
-        err = 'Choose a subcommand amongst the following:\n   ' + '\n   '.join(self._subcommands) + '\n'
-        sys.stderr.write(err)
-        sys.exit(1)
+def parse_arguments():
+    parser = argparse.ArgumentParser(description=' '.join(['Use Entrez Direct https://www.ncbi.nlm.nih.gov/books/NBK179288/ to download genbank files by accession.',
+                'Entrez allows to download batches of up to 100 accession at a time. This is much faster than single downloads.']))
+    parser.add_argument('-i', '--input', type=str, required=True, 
+                        help='Name of working directory to be created')
+    parser.add_argument('-u', '--url', default='https://ictv.global/vmr/current', 
+                        help='Use urllib to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
+    parser.add_argument('-b', '--batch-size', dest='batch_size', type=int, default=75, 
+                        help='Number of accessions in batches for Entrez Direct download. Must be an integer [1,100], Default: 75')
+    parser.add_argument('--cleanup', action='store_true', 
+                        help='Enable the removal of temporary files after processing')
+    args = parser.parse_args()
+    if not 0 < int(args.batch_size) < 101:
+        logging.error('-b value must be in a range [1,100]')
+    return args
 
-    def Parse(self):
-        self.Funclist[self._choice]() # Call function which index is in subcommand choice
-        return self.args
-
-    def DownloadParser(self):
-        descr = ' '.join(['Use Entrez Direct https://www.ncbi.nlm.nih.gov/books/NBK179288/ to download genbank files by accession.',
-                'Entrez allows to download batches of up to 100 accession at a time. This is much faster than single downloads.'])
-        parser = argparse.ArgumentParser(description=descr)
-        parser.add_argument(
-            '-u', '--url', dest='url', default="https://ictv.global/vmr/current", help='Use urllib to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
-        parser.add_argument(
-            '-b', '--batch-size', dest='batch_size', type=int, default=75, help='Number of accessions in batches for Entrez Direct download. Must be an integer [1,100], Default: 75')
-        parser.add_argument(
-            '-i', '--input', dest='input', required=True, help='Name of working directory to be created')
-        parser.add_argument(
-            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
-        args = parser.parse_args()
-        self.args['-u'] = args.url
-        if not 0 < int(args.batch_size) < 101:
-            logging.error('-b value must be in a range [1,100]')
-        self.args['-b'] = int(args.batch_size)
-        self.args['-i'] = args.input
-        self.args['-c'] = args.cleanup
-
-    def MatchParser(self):
-        descr = 'Call ORFs using prodigal-gv (a fork of Prodigal) and run MMSeqs2 to match geNomad\'s marker genes.'
-        parser = argparse.ArgumentParser(description=descr)
-        parser.add_argument(
-        '-i', '--input', dest='input', required=True, help='Name of working directory created by ictvdump download')        
-        parser.add_argument(
-        '-u', '--url', dest='url', default="https://zenodo.org/records/10594875/files/genomad_msa_v1.7.tar.gz?download=1", help='The link to genomad_msa_v1.7.tar.gz markers file on Zenodo. No need to specify unless it moves from Zenodo')
-        parser.add_argument(
-        '-t', '--threads', dest='threads', default=1, help='Number of threads for running MMSeqs2 in multithreading (1)')        
-        parser.add_argument(
-            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
-        args = parser.parse_args()
-        self.args['-u'] = args.url
-        self.args['-i'] = args.input
-        self.args['-t'] = args.threads
-        self.args['-c'] = args.cleanup
-
-    def PrecalculateParser(self):
-        descr = 'Use formula from the paper to precalculate the log-likelihood ratios when the i-th marker is present and absent (both)'
-        parser = argparse.ArgumentParser(description=descr)
-        parser.add_argument(
-        '-i', '--input', dest='input', required=True, help='Name of working directory created by ictvdump download')        
-        parser.add_argument(
-        '-t', '--threads', dest='threads', default=1, help='Number of threads for precalculating LLs in multithreading (1)')        
-        parser.add_argument(
-            '--cleanup', action=argparse.BooleanOptionalAction, default=True, help='Remove temporary directories, the ones containing thousands of files.')
-        args = parser.parse_args()
-        self.args['-i'] = args.input
-        self.args['-t'] = args.threads
-        self.args['-c'] = args.cleanup
-
-class VTU():
-    """
-    Virus Taxonomy Updater class
-    """
+class VMR():
     def __init__(self, working_directory) -> None:
         ## Directories
         self._working_directory = working_directory
         self._vmr_dir = os.path.join(self._working_directory, 'VMR')
         self._index_dir = os.path.join(self._working_directory, 'index')
         self._download_dir = os.path.join(self._working_directory, 'download')
-        self._markers_dir = os.path.join(self._working_directory, 'markers')
-        self._orfs_dir = os.path.join(self._working_directory, 'ORFs')
-        self._tmp_dir = os.path.join(self._working_directory, 'tmp')
-        self._ll_dir = os.path.join(self._working_directory, 'LL')
 
         ## Files
         self._vmr_spreadsheet = os.path.join(self._vmr_dir, 'vmr_spreadsheet.xlsx')
-        self._vmr_table = os.path.join(self._vmr_dir, 'vmr_table.tsv')
         self._index_file = os.path.join(self._index_dir, 'index.json')
         self._exemplars_file = os.path.join(self._working_directory, 'exemplars.tsv.gz')
-        self._exemplar_sorts_fasta = os.path.join(self._working_directory, 'exemplar_sorts.fa')
-        self._exemplar_orfs = os.path.join(self._orfs_dir, 'exemplar_sorts.faa')
-        self._exemplar_sorts_data = os.path.join(self._working_directory, 'exemplar_sorts.tsv')
         self._flagged_file = os.path.join(self._working_directory, 'flagged.txt')
-        self._genomad_gzipped = os.path.join(self._working_directory, 'genomad_msa_v1.7.tar.gz')
-        self._genomad_markers = os.path.join(self._markers_dir, 'genomad_markers.faa')
-        self._matched_markers_txt = os.path.join(self._working_directory, 'matched_markers.txt')
-        self._matched_markers_fasta = os.path.join(self._working_directory, 'matched_markers.faa')
-        self._mmseqs_m8 = os.path.join(self._orfs_dir, 'mmseqs_output.m8')
-        self._feature_matrix = os.path.join(self._working_directory, 'feature_matrix.pkl')
-        self._precalculated = os.path.join(self._working_directory, 'precalculated.pkl')
 
-        ## Other
-        self.Funclist = [self.download_subcommand, self.match_subcommand, self.precalculate_subcommand]
-        self.fm = None
-        self.es = None
-        self.df = None
-        self.genera = None
-        self.eps = 0.01   
         ## Initialize working directory
         if CreateDirectory(self._working_directory) == 1:
             sys.exit(1)
 
-    def download_subcommand(self):
+    def download(self):
         if CreateDirectory(self._vmr_dir) == 1:
             sys.exit(1)
-        if DownloadInternetFile(params['-u'], self._vmr_spreadsheet) == 1:
+        if DownloadInternetFile(args.url, self._vmr_spreadsheet) == 1:
             logging.error('Cannot download VMR file. Are you connected to the internet? Is the URL still valid?')
             sys.exit(1)
         if CreateDirectory(self._index_dir) == 1:
@@ -270,259 +195,13 @@ class VTU():
                                     'Subphylum':subphyla, 'Class':classes, 'Subclass':subclasses, 'Order':orders, 'Suborder':suborders, \
                                     'Family':families, 'Subfamily':subfamilies, 'Genus':genera, 'Subgenus':subgenera, 'Species':species})
         exemplars.to_csv(self._exemplars_file, compression='gzip', sep='\t', index=False)
-        if params['-c']:
+        if args.cleanup:
             shutil.rmtree(self._download_dir, ignore_errors=True)
             shutil.rmtree(self._index_dir, ignore_errors=True)
         logging.info(f'Big table written at {self._exemplars_file}. Now filtering and writing FASTA.')
         logging.info('Note that these sequences will be grouped by viral sort, and the segmented viruses concatenated.')
         status = self.PreprocessExemplars()
         logging.info(f'Finished with status: {status}')
-
-    def match_subcommand(self):
-        import tarfile, glob
-        from subprocess import Popen, PIPE
-
-        if CreateDirectory(self._orfs_dir) == 1:
-            sys.exit(1)
-        if CreateDirectory(self._markers_dir) == 1:
-            sys.exit(1)
-        if DownloadInternetFile(params['-u'], self._genomad_gzipped) == 1:
-            logging.error('Cannot download genomad_msa_v1.7.tar.gz file from Zenodo. Are you connected to the internet? Is the URL still valid?')
-            sys.exit(1)
-        logging.info('Extracting markers tar file')
-        tf = tarfile.open(self._genomad_gzipped)
-        tf.extractall(self._markers_dir)
-        tf.close()
-        genomad_markers = glob.glob(self._markers_dir + "/*/*V*.faa") ## markers with medium to high specificity for viruses
-        if len(genomad_markers) == 0:
-            logging.error('No markers were extracted.')
-            sys.exit(1)
-        else: logging.info(f'{len(genomad_markers)} markers satisfy the requirements')
-
-        def run_cmd(cmd):
-            process = Popen(cmd, stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
-        
-        cmd = ['prodigal-gv', '-p', 'meta', '-i', self._exemplar_sorts_fasta, '-a', self._exemplar_orfs]
-        logging.info('Inferring ORFs using Prodigal-gv')
-        run_cmd(cmd)
-
-        if not os.path.isfile(self._exemplar_orfs):
-            logging.error('ORFs file not written. Something went wrong with ORF-inference.')
-            sys.exit(1)
-
-        logging.info('Formatting markers')
-        f = open(self._genomad_markers, 'w')
-        for file in genomad_markers:
-            d = Seq2Dict(file)
-            for i, key in enumerate(list(d.keys())):
-                d['>seq_'+str(i)+'_'+os.path.basename(file).replace('.faa', '')] = d.pop(key)
-            for key, sequence in d.items():
-                print(key, file=f)
-                print(sequence, file=f)
-        f.close()
-
-        cmd = ["mmseqs", "easy-search", self._exemplar_orfs, self._genomad_markers, self._mmseqs_m8, self._tmp_dir, '-s', '7', '-e', '1e-3', '-c', '0.2', '--cov-mode', '1', '--threads', params['-t']]
-        
-        logging.info('Matching markers using MMSeqs2')
-        run_cmd(cmd)
-
-        if not os.path.isfile(self._mmseqs_m8):
-            logging.error('-m8 file (MMSeqs2) not written. Something went wrong with marker-matching.')
-            sys.exit(1)
-
-        logging.info('Formatting feature matrix')
-        m8 = pd.read_csv(self._mmseqs_m8, 
-                        sep='\t', 
-                        header=None, 
-                        names=['query', 
-                                'target', 
-                                'percid', 
-                                'alnlen', 
-                                'mis', 
-                                'gaps', 
-                                'qstart', 
-                                'qend', 
-                                'tstart', 
-                                'tend', 
-                                'evalue', 
-                                'bitscore'])
-        # if no further filtering, keep the first two columns
-        m8 = m8[['query', 'target']]
-
-        # remove trailing ORF [mmseq2-added string]
-        q_split = m8['query'].str.rsplit(pat='_', n=1, expand=True)
-        # remove leading variable string in the geNomad markers
-        t_split = m8['target'].str.rsplit(pat='_', n=1, expand=True)
-        # update original data frame with redundant information
-        m8['query'] = q_split.iloc[:,0]
-        m8['target'] = t_split.iloc[:,1]
-
-        q_split, t_split = list(), list() # free memory
-        # ==== Data gazing ==== # For users wishing to delve into details
-        # how many markers were mapped?
-        np.unique(m8['target']).size
-
-        # look at the most present genomad markers
-        marker_counts = m8['target'].value_counts()
-        marker_counts
-
-        # also look at those present only once that can be discarded
-        list(marker_counts==1).count(True)
-
-        summary = f'1stQu: {np.quantile(marker_counts, 0.25)} \
-                2ndQu: {np.quantile(marker_counts, 0.5)} \
-                3rdQu: {np.quantile(marker_counts, 0.75)} \
-                min: {np.min(marker_counts)} \
-                max: {np.max(marker_counts)} \
-                avg: {np.mean(marker_counts):4.2f}'
-        #logging.info(summary)
-
-        # ==== Back to editing ==== #
-
-        # simplify data frame by removing duplicated couples (natural byproduct of multiplicity)
-        m8 = m8.drop_duplicates(subset=['query', 'target'])
-        # convert to presence/absence matrix using crosstab and applymap
-
-        #feature_matrix = pd.crosstab(m8['query'], m8['target']).applymap(lambda x: 1 if x > 0 else 0)
-        # While writing the code FutureWarning: DataFrame.applymap has been deprecated. Use DataFrame.map instead.
-        feature_matrix = pd.crosstab(m8['query'], m8['target']).map(lambda x: 1 if x > 0 else 0)
-
-        # picklize it for a WAY faster I/O
-        feature_matrix.to_pickle(self._feature_matrix)
-        ## Can read it again using df=pd.read_pickle('feature_matrix.pkl')
-
-        # get the data that matched
-        matched_markers = feature_matrix.columns.values
-        np.savetxt(self._matched_markers_txt, matched_markers, fmt="%s")
-        matched_markers = set(sorted(matched_markers))
-        d = Seq2Dict(self._genomad_markers)
-        with open(self._matched_markers_fasta, 'w') as f:
-            for k, v in d.items():
-                if k.split('_')[2].rstrip() in matched_markers:
-                    print(k, file=f)
-                    print(v, file=f)
-
-        if params['-c']:
-            #shutil.rmtree(self._markers_dir, ignore_errors=True)
-            shutil.rmtree(self._orfs_dir, ignore_errors=True)
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-        status = 1 - os.path.isfile(self._feature_matrix)
-        logging.info(f'Finished with status: {status}')
-
-    def precalculate_subcommand(self):
-        import pickle
-        if CreateDirectory(self._ll_dir) == 1:
-            sys.exit(1)
-        try:
-            self.fm = pd.read_pickle(self._feature_matrix)
-        except:
-            logging.error('Could not read feature matrix file. Did you run previous subcommands first?')
-            sys.exit(1)
-        try:
-            self.es = pd.read_csv(self._exemplar_sorts_data, sep='\t')
-        except:
-            logging.error('Could not read exemplar sorts metadata file. Did you run previous subcommands first?')
-            sys.exit(1)
-        survived = self.fm.index
-        self.es = self.es[self.es['header'].isin(survived)] ## keep exemplars for which there are genomes now
-
-        genera = sorted(self.es['Genus'].dropna().unique())
-        self.fm = self.fm.loc[self.es.loc[(self.es['Genus'].isin(genera)), 'header']]
-        self.fm = self.fm[self.fm.columns[self.fm.sum() > 0]]
-        self.df = pd.concat([self.fm.loc[self.es.loc[(self.es['Genus']==Nc), 'header']].mean().rename(Nc).to_frame().transpose() for Nc in genera])
-
-        precalculated, results = {}, []
-        logging.info(f'Beginning multiprocessing, using {params["-t"]} threads')
-        with Pool(int(params['-t'])) as p1:
-            results = p1.map(self.precalculate_LL_background_by_genus, genera)
-        logging.info('Done. Collecting results')
-        for elem in results:
-            for k, v in elem.items(): precalculated[k] = v
-        with open(self._precalculated, 'wb') as handle:
-            pickle.dump(precalculated, handle) # Write precalculated to file for future use
-
-        ## Copy additional data into the LL archive
-        src, dst = self._matched_markers_txt, os.path.join(self._ll_dir, os.path.basename(self._matched_markers_txt))
-        shutil.copy(src, dst)
-        src, dst = self._matched_markers_fasta, os.path.join(self._ll_dir, os.path.basename(self._matched_markers_fasta))
-        shutil.copy(src, dst)        
-        src, dst = self._precalculated, os.path.join(self._ll_dir, os.path.basename(self._precalculated))
-        shutil.copy(src, dst)        
-
-        shutil.make_archive(self._ll_dir, 'xztar', self._ll_dir)
-        if params['-c']:
-            shutil.rmtree(self._ll_dir, ignore_errors=True)
-        status = 1 - os.path.isfile(self._ll_dir+'.tar.xz')
-        logging.info(f'Finished with status: {status}')
-
-    def precalculate_LL_background_by_genus(self, genus):
-        f_c = self.df.loc[(self.df.index==genus)]
-        Ig1_vals = np.log((f_c+self.eps).values[0])
-        Ig0_vals = np.log(((1-f_c)+self.eps).values[0])
-        stacked = np.vstack((Ig0_vals, Ig1_vals))
-        return {genus : stacked}
-
-    def PreprocessExemplars(self):
-        df = pd.read_csv(self._exemplars_file, compression='gzip', sep='\t')
-        # group by sorts first
-        tmp = []
-        for sort in df['sort'].unique():
-            sub = df[(df['sort']==sort)]
-            length, gc_fraction = sub['length'].sum(), np.mean(sub['gc_fraction'])
-            # the header scheme is {sort identifier} {number of partitions} {size of the concatenated sequence}
-            unified_sequence = f'>sort_{sort}_{sub.shape[0]}_{length}'
-            unified_sequence += '\n' # need a newline here
-            for _, row in sub.iterrows():
-                s = row['sequence'].split('\n')[1]
-                unified_sequence += s
-            # now get a random representative of the subset and update values
-            s = sub.sample(1).copy()
-            s['length'] = length
-            s['gc_fraction'] = gc_fraction
-            s['sequence'] = unified_sequence
-            s['header'] = f'sort_{sort}_{sub.shape[0]}_{length}'
-            tmp.append(s)
-        # Now concatenate, and update old data frame
-        df = pd.concat(tmp)
-
-        # write sequence to file
-        with open(self._exemplar_sorts_fasta, 'w') as f:
-            for _, row in df.iterrows():
-                print(row['sequence'], file=f)
-        # subset data frame to include only the data needed for classification
-        
-        df = df[['sort', 
-            'header', 
-            'Realm',
-            'Kingdom',
-            'Phylum',
-            'Class',
-            'Order',
-            'Family',
-            'Genus',
-            'Species']]
-        
-        df.to_csv(self._exemplar_sorts_data, sep='\t', index=False)
-        if not os.path.isfile(self._exemplar_sorts_fasta) or not os.path.isfile(self._exemplar_sorts_data):
-            return 1
-        return 0
-
-def Seq2Dict(file):
-    d = {}
-    header = None
-    lines = [line.rstrip() for line in open(file)]
-    ftells = []
-    for i, line in enumerate(lines):
-        if line.startswith('>'):
-            header = line.split('>')[1].split()[0]
-            d[header] = ""
-            ftells.append(i+1)
-    ftells.append(i+2)
-    for i, header in enumerate(list(d.keys())):
-        d[header] = ''.join(lines[ftells[i]:ftells[i+1]-1])
-    return d
 
 def Excel2Index(vmr_spreadsheet):
     import re
@@ -711,8 +390,8 @@ def DownloadInternetFile(url, output):
 
 def Batchata(data):
     size = len(data)
-    for i in range(0, size, params['-b']):
-        yield data[i:i + params['-b']]
+    for i in range(0, size, args.batch_size):
+        yield data[i:i + args.batch_size]
 
 def GenBank2Info(file):
     info = {'molecule_type':None, 'topology':None, 'date':None, 'host':None, 'country':None}
@@ -752,8 +431,6 @@ def GenBank2Seq(file):
             return SeqIO.SeqRecord(seq).seq
 
 if __name__ == '__main__':
-    sys.stderr.write('\n(v) This is %s version %s\n\n' %(PROGRAM, VERSION))
-    args = Args()
-    params = args.Parse()
-    vtu = VTU(params['-i'])
-    vtu.Funclist[params['subcommand']]()
+    args = parse_arguments()
+    vmr = VMR(args.input)
+    vmr.download()
