@@ -200,8 +200,6 @@ class VMR():
             shutil.rmtree(self._index_dir, ignore_errors=True)
         logging.info(f'Big table written at {self._exemplars_file}. Now filtering and writing FASTA.')
         logging.info('Note that these sequences will be grouped by viral sort, and the segmented viruses concatenated.')
-        status = self.PreprocessExemplars()
-        logging.info(f'Finished with status: {status}')
 
 def Excel2Index(vmr_spreadsheet):
     import re
