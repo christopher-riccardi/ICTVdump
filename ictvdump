@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 PROGRAM, VERSION='ictvdump', '0.1.0'
-print(f'This is {PROGRAM} v {VERSION}\n')
+
 """
 MIT License
 
@@ -41,12 +41,16 @@ logging.basicConfig(format='%(asctime)s - %(funcName)s:%(lineno)d [%(levelname)s
 PROGRAM, VERSION='ICTVdump', '0.1.0'
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description=' '.join(['Use Entrez Direct https://www.ncbi.nlm.nih.gov/books/NBK179288/ to download genbank files by accession.',
-                'Entrez allows to download batches of up to 100 accession at a time. This is much faster than single downloads.']))
+    parser = argparse.ArgumentParser(description='By default, the "download" subcommand allows access to the latest version of the Virus Metadata Resource,\
+                                      polishes the GenBank accession numbers tied to each viral sort in the VMR spreadsheet, verifies their validity and \
+                                     downloads their associated sequence and metadata in batches of 75 using Edirect, then cleans after the many files it creates. \
+                                     Optionally, it can download any other version of the VMR by providing their link to the command line option "-u". \
+                                     In this case it is necessary to navigate to the VMR website, right-click on the release of interest, copy the \
+                                     link and paste it in the command line after the "-u" flag and between double quotes.')
     parser.add_argument('-i', '--input', type=str, required=True, 
-                        help='Name of working directory to be created')
+                        help='Name of working directory to be created if not existing')
     parser.add_argument('-u', '--url', default='https://ictv.global/vmr/current', 
-                        help='Use urllib to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
+                        help='Use wget to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
     parser.add_argument('-b', '--batch-size', dest='batch_size', type=int, default=75, 
                         help='Number of accessions in batches for Entrez Direct download. Must be an integer [1,100], Default: 75')
     parser.add_argument('--cleanup', action='store_true', 
@@ -429,6 +433,7 @@ def GenBank2Seq(file):
             return SeqIO.SeqRecord(seq).seq
 
 if __name__ == '__main__':
+    sys.stderr.write('\n(v) This is %s version %s\n\n' %(PROGRAM, VERSION))
     args = parse_arguments()
     vmr = VMR(args.input)
     vmr.download()
