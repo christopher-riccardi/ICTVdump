@@ -1,16 +1,17 @@
 # ICTVdump
-ICTVdump automatically collects DNA sequence and metadata associated to every exemplar virus listed in the ICTV Virus Metadata Resource (VMR). By default the latest VMR is accessed, but it is also possible to download the previous versions by feeding the desired link to the command line option ```-u```.  
+We envisioned to facilitate the access to any release of the Virus Metadata Resource (VMR). ICTVdump automatically collects taxonomic labels and viral genomic sequence associated to every virus listed in the official taxonomy (ICTV). By default, the latest version of the VMR is accessed, with the possibility of downloading any previous version through the command line option ```-u```.  
+
+![alt text](ictv_workflow.svg)
 
 ## Usage  
-ICTVdump is written in python and its dependencies are listed [here](#dependencies-and-installation). The program automatically connects to the VMR, retrieves the GenBank identifiers, downloads them in batch from NCBI and generates one data table with the ICTV-ratified lineage for each virus, as well as their sequence and metadata. The only mandatory argument is the name of a non-existing directory where ICTVdump will operate.   
+ICTVdump is written in python and its dependencies are listed [here](#dependencies-and-installation). The program automatically connects to the VMR, retrieves the GenBank identifiers, downloads them in batch from the NCBI and generates an SQL database and one taxonomy table. When the path to an already existing database is provided, ICTVdump skips the download of sequences that are already present, which saves a lot of time for users interested in accessing several releases of the VMR. The taxonomy table lists the ICTV-ratified taxa for every virus for which at least one GenBank accession was found.   
  ```bash
-./ictvdump -i myfolder
+python ictvdump -d <str> -o <str> [-u <url to any version, or default>]
  ```
-Upon completion (approximately 40 minutes for the latest VMR),  **exemplars.tsv.gz** (the raw data table) will be present in the path specified by ```-i```. See the [Important notice](#important-notice) section to download this file directly without running the pipeline.  
 
 ## Dependencies and installation  
 The recommended way to install the dependencies is through conda/mamba on Linux kernel:  
-```conda create -n ictv -c conda-forge -c bioconda biopython openpyxl numpy pandas -y```  
+```conda create -n ictv -c conda-forge openpyxl numpy pandas -y```  
 with the inclusion of [Entrez Direct](https://www.ncbi.nlm.nih.gov/books/NBK179288/) in a separate step:  
 ```sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)"```.  
 
