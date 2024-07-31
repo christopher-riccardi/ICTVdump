@@ -1,382 +1,62 @@
-#!/usr/bin/env python3
-PROGRAM, VERSION='ictvdump', '0.1.0'
+taboo = {'JAEILC010000038', 
+        'GECV01031551', 
+        'AE006468', 
+        'CP015418', 
+        'CP000031', 
+        'CP000830', 
+        'CP001312', 
+        'CP001357', 
+        'BX897699', 
+        'AUXO01792325', 
+        'OQ735257', 
+        'QQ198719', 
+        'QQ198717', 
+        'QQ198718',
+        'OQ7219011'
+        'SRR2729873', 
+        'AUXO017923253', 
+        'K03573', 
+        'C978956',
+        'AF181082',
+        'D01221',
+        'MT29357'} # known invalid accessions
+known_typos = {'HQHQ847905':'HQ847905', 
+               'EU7257772':'EU725772', 
+               'LCM141331':'KX884774', 
+               'SKR870013':'KR870013', 
+               'AF4362513':'AF362513', 
+               'JX4782635':'JX478263',
+               'NC010308':'NC_010308',
+               'NC021720':'NC_021720',
+               'NC035620':'NC_035620',
+               'NC028131':'NC_028131',
+               'NC027432':'NC_027432',
+               'NC012805':'NC_012805',
+               'NC012127':'NC_012127'
+               } # known typos due to manual annotation, we salvage those by replacing with a list containing the polished accession
 
-"""
-MIT License
-
-Copyright (c) 2024 Christopher Riccardi and Yuqiu Wang
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-"""
-from multiprocessing import Pool
-from Bio import SeqIO
 import pandas as pd
 import numpy as np
 import subprocess
 import argparse
 import logging
-import shutil
-import json
-import time
+import sqlite3
 import sys
 import os
-
-logging.basicConfig(format='%(asctime)s - %(funcName)s:%(lineno)d [%(levelname)s] %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
-PROGRAM, VERSION='ICTVdump', '0.1.0'
+import re
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='By default, the "download" subcommand allows access to the latest version of the Virus Metadata Resource,\
-                                      polishes the GenBank accession numbers tied to each viral sort in the VMR spreadsheet, verifies their validity and \
-                                     downloads their associated sequence and metadata in batches of 75 using Edirect, then cleans after the many files it creates. \
-                                     Optionally, it can download any other version of the VMR by providing their link to the command line option "-u". \
-                                     In this case it is necessary to navigate to the VMR website, right-click on the release of interest, copy the \
-                                     link and paste it in the command line after the "-u" flag and between double quotes.')
-    parser.add_argument('-i', '--input', type=str, required=True, 
+    parser = argparse.ArgumentParser(description='Access any version of the Virus Metadata Resource and store the data into a database.')
+    parser.add_argument('-d', '--database', type=str, required=True, 
+                        help='Name of database to read from/add sequences to. Will create if it does not exist, though having it saves a lot of time.')
+    parser.add_argument('-o', '--output', type=str, required=True, 
                         help='Name of working directory to be created if not existing')
     parser.add_argument('-u', '--url', default='https://ictv.global/vmr/current', 
-                        help='Use wget to download a local copy of the current VMR table from the ICTV. Default is to download the latest version.')
-    parser.add_argument('-b', '--batch-size', dest='batch_size', type=int, default=75, 
-                        help='Number of accessions in batches for Entrez Direct download. Must be an integer [1,100], Default: 75')
-    parser.add_argument('--cleanup', action='store_true', 
-                        help='Enable the removal of temporary files after processing')
+                        help='URL to the desired VMR version. Navigate to the ICTV website, under Virus Metadata Resource right-click on any spreadsheet and copy the link.')
     args = parser.parse_args()
-    if not 0 < int(args.batch_size) < 101:
-        logging.error('-b value must be in a range [1,100]')
     return args
 
-class VMR():
-    def __init__(self, working_directory) -> None:
-        ## Directories
-        self._working_directory = working_directory
-        self._vmr_dir = os.path.join(self._working_directory, 'VMR')
-        self._index_dir = os.path.join(self._working_directory, 'index')
-        self._download_dir = os.path.join(self._working_directory, 'download')
-
-        ## Files
-        self._vmr_spreadsheet = os.path.join(self._vmr_dir, 'vmr_spreadsheet.xlsx')
-        self._index_file = os.path.join(self._index_dir, 'index.json')
-        self._exemplars_file = os.path.join(self._working_directory, 'exemplars.tsv.gz')
-        self._flagged_file = os.path.join(self._working_directory, 'flagged.txt')
-
-        ## Initialize working directory
-        if CreateDirectory(self._working_directory) == 1:
-            sys.exit(1)
-
-    def download(self):
-        if CreateDirectory(self._vmr_dir) == 1:
-            sys.exit(1)
-        if DownloadInternetFile(args.url, self._vmr_spreadsheet) == 1:
-            logging.error('Cannot download VMR file. Are you connected to the internet? Is the URL still valid?')
-            sys.exit(1)
-        if CreateDirectory(self._index_dir) == 1:
-            sys.exit(1)
-        if not os.path.isdir(self._vmr_dir) or not os.path.isfile(self._vmr_spreadsheet):
-            logging.error('Something is wrong with I/O of your main working directory')
-            sys.exit(1)
-        index, df = Excel2Index(self._vmr_spreadsheet)
-        with open(self._index_file, 'w') as w:
-            json.dump(index, w)
-        try:
-            index = json.load(open(self._index_file))
-        except:
-            logging.error('Something is wrong with your index file')
-            sys.exit(1)
-        if not os.path.isdir(self._vmr_dir) or not os.path.isfile(self._vmr_spreadsheet) or not os.path.isfile(self._index_file):
-            logging.error('Something is wrong with I/O of your main working directory')
-            sys.exit(1)
-        if CreateDirectory(self._download_dir) == 1:
-            sys.exit(1)
-        index = json.load(open(self._index_file))
-        logging.info('Proceeding with Edirect download')
-        [EntrezRunner(batch, self._download_dir) for batch in Batchata(index)]
-
-        from Bio.SeqUtils import gc_fraction
-        if not os.path.isfile(self._vmr_spreadsheet) or not os.path.isfile(self._index_file) or not os.path.isdir(self._download_dir):
-            logging.error('Something is wrong with I/O of your main working directory')
-            sys.exit(1)
-        logging.info('Extracting data from GenBank files, please wait')
-        flags, files, index = [], \
-            [file.replace('.gb', '') for file in os.listdir(self._download_dir)], json.load(open(self._index_file))# Load accessions and index
-        flags = [data['accession'] for data in index if data['accession'] not in files] # Files in the self._download_dir are non-empty
-        accessions, sorts, virus_names, hosts, hosts_VMR, partitions, \
-        molecule_types, genome_compositions, topologies, genome_coverages, \
-        exemplars_additionals, dates, countries, lengths, gc_fractions, \
-        sequences, realms, subrealms, kingdoms, subkingdoms, phyla, \
-        subphyla, classes, subclasses, orders, suborders, families, \
-        subfamilies, genera, subgenera, species = [], [], [], [], [], \
-        [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], \
-        [], [], [], [], [], [], [], [], [], []
-        for data in index: # Data is the single dictionary in the index file, which is a list
-            if data['accession'] in flags:
-                continue # Skip this specific dict if it's been flagged
-            gb = os.path.join(self._download_dir, data['accession']+'.gb') # Load GenBank file in self._download_dir. GenBank file has plenty of information which we try fetching
-
-            ## Handle sequence first
-            d_sequence = '>%s %s\n' % (data['accession'], data['sort'])
-            seq = GenBank2Seq(gb) # Get it or download it!
-            if seq==None:
-                flags.append(data['accession'])
-                continue # Flag and skip if we cannot retrieve sequence
-            d_gc_fraction=gc_fraction(seq) # Calc GC content of this object
-            d_length=len(seq)
-            d_sequence += seq # Format header + sequence
-
-            ## Handle more info
-            info = GenBank2Info(gb)
-            d_accession, d_sort, d_partition, d_molecule_type, d_topology, d_date, d_host, d_country = data['accession'], data['sort'], data['partition'], info['molecule_type'], info['topology'], info['date'], info['host'], info['country']
-            
-            ## Handle taxonomy
-            row = df[df['Sort']==d_sort] # Get single row with same 'Sort' i.e., VMR identifier
-            d_virus_name, d_exemplar_additional, d_host_VMR, d_genome_coverage,\
-            d_genome_composition, d_Realm, d_Subrealm, d_Kingdom, d_Subkingdom, \
-            d_Phylum, d_Subphylum, d_Class, d_Subclass, d_Order, d_Suborder, \
-            d_Family, d_Subfamily, d_Genus, d_Subgenus, d_Species = row['Virus name(s)'].values[0], \
-            row['Exemplar or additional isolate'].values[0], row['Host Source'].values[0], row['Genome coverage'].values[0], row['Genome composition'].values[0] ,\
-            row['Realm'].values[0], row['Subrealm'].values[0], row['Kingdom'].values[0], row['Subkingdom'].values[0], \
-            row['Phylum'].values[0], row['Subphylum'].values[0], row['Class'].values[0], row['Subclass'].values[0], \
-            row['Order'].values[0], row['Suborder'].values[0], row['Family'].values[0], row['Subfamily'].values[0],\
-            row['Genus'].values[0], row['Subgenus'].values[0], row['Species'].values[0] 
-            accessions.append(d_accession)
-            sorts.append(d_sort)
-            virus_names.append(d_virus_name)
-            hosts.append(d_host)
-            hosts_VMR.append(d_host_VMR)
-            partitions.append(d_partition)
-            molecule_types.append(d_molecule_type)
-            genome_compositions.append(d_genome_composition)
-            topologies.append(d_topology)
-            genome_coverages.append(d_genome_coverage)
-            exemplars_additionals.append(d_exemplar_additional)
-            dates.append(d_date)
-            countries.append(d_country)
-            lengths.append(d_length)
-            gc_fractions.append(d_gc_fraction)
-            sequences.append(d_sequence)
-            realms.append(d_Realm)
-            subrealms.append(d_Subrealm)
-            kingdoms.append(d_Kingdom)
-            subkingdoms.append(d_Subkingdom)
-            phyla.append(d_Phylum)
-            subphyla.append(d_Subphylum)
-            classes.append(d_Class)
-            subclasses.append(d_Subclass)
-            orders.append(d_Order)
-            suborders.append(d_Suborder)
-            families.append(d_Family)
-            subfamilies.append(d_Subfamily)
-            genera.append(d_Genus)
-            subgenera.append(d_Subgenus)
-            species.append(d_Species)
-            ## End of loop
-        logging.info(f'Flagged {len(flags)} entries, updating index')
-        [index.remove(data) for data in index if data['accession'] in flags] # Remove dictionaries from index list when the accession is flagged
-        print(*flags, sep='\n', file=open(self._flagged_file, 'w')) # Also write flagged accession to file
-        with open(self._index_file, 'w') as w:
-            json.dump(index, w) # Update index with clean information
-        logging.info('Writing tab-delimited, gzip-compressed table. Please wait')
-        ## Merge with taxonomy from ICTV
-        exemplars = pd.DataFrame({'accession':accessions, 'sort':sorts, 'virus_name':virus_names, 'host':hosts, 'host_VMR':hosts_VMR, \
-                                    'partition':partitions, 'molecule_type':molecule_types, 'genome_composition':genome_compositions, \
-                                    'topology':topologies, 'genome_coverage':genome_coverages, 'exemplar_additional':exemplars_additionals, \
-                                    'date':dates, 'country':countries, 'length':lengths, 'gc_fraction':gc_fractions, 'sequence':sequences, \
-                                    'Realm':realms, 'Subrealm':subrealms, 'Kingdom':kingdoms, 'Subkingdom':subkingdoms, 'Phylum':phyla, \
-                                    'Subphylum':subphyla, 'Class':classes, 'Subclass':subclasses, 'Order':orders, 'Suborder':suborders, \
-                                    'Family':families, 'Subfamily':subfamilies, 'Genus':genera, 'Subgenus':subgenera, 'Species':species})
-        exemplars.to_csv(self._exemplars_file, compression='gzip', sep='\t', index=False)
-        if args.cleanup:
-            shutil.rmtree(self._download_dir, ignore_errors=True)
-            shutil.rmtree(self._index_dir, ignore_errors=True)
-        logging.info(f'Big table written at {self._exemplars_file}. Now filtering and writing FASTA.')
-        logging.info('Note that these sequences will be grouped by viral sort, and the segmented viruses concatenated.')
-
-def Excel2Index(vmr_spreadsheet):
-    import re
-    def spot_old_format(string):
-        old_format = re.compile(r'^[A-Z]\d{5}$') ## one letter + five digits (pre 2004)
-        if old_format.match(string):
-            return string
-        return None
-    def spot_intermediate_format(string):
-        intermediate_format = re.compile(r'^[A-Z]{2}\d{6}$') ## two letters + six digits
-        if intermediate_format.match(string):
-            return string
-        return None
-    def spot_current_format(string):
-        current_format = re.compile(r'^[A-Z]{4}\d{8}$') ## four letters + eight digits (post 2004)
-        if current_format.match(string):
-            return string
-        return None
-    known_typos = {'ON381478-ON381479':['ON381478','ON381479'], 'HQHQ847905':['HQ847905'], 'EU7257772':['EU725772'], 'LCM141331':['KX884774'], 'SKR870013':['KR870013'], 'AF4362513':['AF362513'], 'JX4782635':['JX478263']} # known typos due to manual annotation, we salvage those by replacing with a list containing the polished accession
-    known_invalid = {'JAEILC010000038', 'GECV01031551', 'AE006468', 'CP015418', 'CP000031', 'CP000830', 'CP001312', 'CP001357', 'BX897699', 'AUXO01792325', 'OQ735257', 'QQ198719', 'QQ198717', 'QQ198718'} # GenBank accessions that have been decommissioned, or that do not contain the virus
-    df = pd.read_excel(vmr_spreadsheet) # Requires openpyxl installed
-    df = df.loc[(~df['Virus GENBANK accession'].isna())]
-    df['Accessions'] = ""
-    removed = set()
-    for i, row in df.iterrows():
-        entries = []
-        accessions = []
-        matches = re.findall(r'[^a-zA-Z0-9]', row['Virus GENBANK accession'].rstrip())
-        if not matches: # not segmented nor containing special characters
-            entries.append(row['Virus GENBANK accession'].rstrip())
-        else:
-            line = re.sub(r'[ \t\n\r\f\v:;,+]+', '@', row['Virus GENBANK accession'].rstrip())
-            entries += line.split('@')
-        # 'entries' contains also prefixes and invalid accessions now, so parse it
-        # Loop several times, each time applying a different filter.
-        # Filter 1: by size
-        for entry in entries:
-            if len(entry) > 5:
-                accessions.append(entry)
-        entries = accessions.copy()
-        accessions = []
-        #Filter 2: by properly formatted
-        for entry in entries:
-            old_format = spot_old_format(entry[0:0+6])
-            intermediate_format = spot_intermediate_format(entry[0:0+8])
-            current_format = spot_current_format(entry[0:0+12])
-            if old_format: accessions.append(old_format)
-            elif intermediate_format: accessions.append(intermediate_format)
-            elif current_format: accessions.append(current_format)
-            else:
-                if known_typos.get(entry, None):
-                    accessions.append(entry)
-                else:
-                    removed.add(entry)
-        for entry in accessions:
-            if entry in known_invalid:
-                accessions.remove(entry)
-        if len(accessions) == 0: # accession(s) invalid, skip this sort since there is no info associated
-            df.loc[(df.index==row.name), 'Accessions'] = np.nan
-            continue
-        df.loc[(df.index==row.name), 'Accessions'] = ','.join(accessions)
-    # re-filter by NaN
-    df = df.loc[(~df['Accessions'].isna())]
-    df['Virus GENBANK accession'] = df['Accessions']
-    del df['Accessions']
-    if df.shape[0] == 0:
-        logging.error('Empty data frame, something went wrong with parsing the GenBank accession identifiers')
-    df = df.rename(columns={'Host source':'Host Source'})
-    df = df.rename(columns={'Exemplar or additional isolate ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)'})
-    df = df.rename(columns={'Exemplar (E) or additional isolate (A)':'Exemplar or additional isolate'})
-    df = df.rename(columns={'Host source':'Host Source'})
-    df = df.rename(columns={'Species Sort':'Sort'})
-    df = df.rename(columns={'Host_Source':'Host Source', 'Species Sort':'Sort'})
-    df = df.rename(columns={'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
-    df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
-    df = df.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort', 'Virus REFSEQ accession 200319':'Virus REFSEQ accession'})
-    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'species':'Species', 'subfamily':'Subfamily'})
-    df = df.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-    df = df.rename(columns={'Exemplar or Additional ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
-    required_columns = ['Sort','Isolate Sort','Realm','Subrealm','Kingdom','Subkingdom','Phylum','Subphylum','Class','Subclass','Order','Suborder','Family','Subfamily','Genus','Subgenus','Species','Exemplar or additional isolate','Virus name(s)','Virus name abbreviation(s)','Virus isolate designation','Virus GENBANK accession','Virus REFSEQ accession','Genome coverage','Genome composition','Host source']
-    for column in required_columns:
-        if column not in df.columns:
-            df[column] = np.nan
-    if df['Sort'].sum() == 0:
-        logging.warning('"Sort" field not properly formatted. Coercing to np.arange(df.shape[0]), i.e., a progressive integer')
-        df['Sort'] = np.arange(df.shape[0]) + 1
-    virus_identifiers = [str(elem[0])+'_'+str(elem[1]) for elem in zip(df['Sort'],df['Isolate Sort'])]
-    if len(virus_identifiers) != len(set(virus_identifiers)):
-        logging.warning('Attempted merging "Sort" with "Isolate Sort" fields but some values are not unique. Proceeding with adding a progressive integer instead of the "Sort", keeping the "Isolate Sort" intact')
-        virus_identifiers = []
-        isolate_sorts = list(df['Isolate Sort'])
-        value = 0
-        for i in range(len(isolate_sorts)):
-            if isolate_sorts[i]==1:
-                value += 1
-                virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
-            else:
-                virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
-    df['Sort'] = virus_identifiers
-    df = df.drop_duplicates(subset=['Sort'], keep='first') # At this point the data set is unique enough in terms of Sort. Remove the redundant rest (if present)
-
-    index = []
-    for i, row in df.iterrows():  
-        sort, accessions = row['Sort'], row['Virus GENBANK accession']
-        for j, accession in enumerate(accessions.split(',')):
-            d_accession = accession
-            d_sort = sort
-            d_partition = j
-            d_str = {'accession':d_accession, 'sort':d_sort, 'partition':d_partition}
-            index.append(d_str)
-    return index, df
-
-def EntrezRunner(batch, download_dir):
-    ## Run Entrez Direct commands 'esearch' piped with 'efetch'
-    accessions = [elem['accession'] for elem in batch]
-    logging.info(f'Running Entrez Direct on a batch of {len(accessions)} accessions')
-    script = "esearch -db nuccore -query " + ','.join(accessions) + " | efetch -format genbank"
-    result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
-    time.sleep(0.5) # Give it a break!
-    consistent = len(accessions) == result.count('ACCESSION  ') # There should be as many genbank files as there were queried accessions
-    if consistent:
-        logging.info('Accessions and GenBank files count are consistent')
-        split = GenBankSplitter(result, accessions)
-        GenBankWriter(split, download_dir)
-    else:
-        logging.warning('One or more accessions in batch does not link a valid GenBank. Attempting download of this batch one by one')
-        for accession in accessions:
-            script = "esearch -db nuccore -query " + accession + " | efetch -format genbank"
-            result = ""
-            result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
-            if len(result) < 80: # Arbitrary lower bound of calling a GenBank file non-empty
-                logging.info(f'Accession {accession} does not link any GenBank file. This might have triggered the warning')
-                time.sleep(1)
-                continue # Do not write this empty file
-            with open(os.path.join(download_dir, accession+'.gb'), 'w') as w:
-                w.write(result)
-
-def GenBankWriter(dictionary, genbank_dir):
-    for key, item in dictionary.items():
-        if len(item) > 0: # Write GenBank file if not empty
-            with open(os.path.join(genbank_dir, key+'.gb'), 'w') as w:
-                print(*item, sep='\n', file=w)
-        else:
-            logging.warning(f'Entry with accession {key} has an empty GenBank file.')
-
-def GenBankSplitter(string, accessions):
-    i = -1
-    lines = string.split('\n') # Split the large text returned by subprocess
-    if not len(lines):
-        logging.warning('Subprocess did not capture output')
-    d = {}
-    locus = None
-    for line in lines:
-        if line.startswith('LOCUS '):
-            i += 1
-            locus = accessions[i] 
-            d[locus] = []
-        if locus:
-            d[locus].append(line)
-    return d
-
-def CreateDirectory(directory_path):
-    try:
-        os.mkdir(directory_path)
-    except FileExistsError:
-        pass # Ignore if already present
-    except: # Anything else produces error, return status 1
-        logging.error(f'Cannot create directory {directory_path}')
-        return 1
-    logging.info(f'Successfully created/updated directory at {directory_path}')
-    return 0
+logging.basicConfig(format='%(asctime)s - %(funcName)s:%(lineno)d [%(levelname)s] %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
 
 def DownloadInternetFile(url, output):
     from subprocess import Popen, PIPE
@@ -390,50 +70,222 @@ def DownloadInternetFile(url, output):
         return 1
     return 0
 
-def Batchata(data):
-    size = len(data)
-    for i in range(0, size, args.batch_size):
-        yield data[i:i + args.batch_size]
+def CreateDirectory(directory_path):
+    try:
+        os.mkdir(directory_path)
+    except FileExistsError:
+        pass # Ignore if already present
+    except: # Anything else produces error, return status 1
+        logging.error(f'Cannot create directory {directory_path}')
+        return 1
+    logging.info(f'Successfully created/updated directory at {directory_path}')
+    return 0
 
-def GenBank2Info(file):
-    info = {'molecule_type':None, 'topology':None, 'date':None, 'host':None, 'country':None}
-    for gb in SeqIO.parse(file, 'gb'):
-        molecule_type = gb.annotations.get('molecule_type', None)
-        if molecule_type:
-            info['molecule_type'] = molecule_type
-        topology = gb.annotations.get('topology', None)
-        if topology:
-            info['topology'] = topology
-        date = gb.annotations.get('date', None)
-        if date:
-            info['date'] = date
-        host = gb.features[0].qualifiers.get('host', None)
-        if host==None:
-            host = gb.features[0].qualifiers.get('lab_host', None)
-        if host:
-            info['host'] = host[0]
-        country = gb.features[0].qualifiers.get('country', None)
-        if country:
-            info['country'] = country[0]
-        return info
+def parse_raw_accession_string(s):
+    if pd.isnull(s):
+        return set()
+    normalized_string = re.sub(r'[ \t\n\r\f\v:;,+-]+', '@', s) ## After much search we settled for this
+    parts = set(part for part in normalized_string.split('@') 
+                if len(part) > 5 and not re.search(r'[a-z]', part) and part and part[0].isalpha() and not 'DNA' in part)
+    return sorted(parts)
 
-def GenBank2Seq(file):
-    for gb in SeqIO.parse(file, 'gb'):
-        if gb.seq.defined:
-            return gb.seq
+def itr(a, b):
+    for i in range(0, len(a), b): yield  a[i:i+b]
+
+def eval_accessions(acc_list):
+    cmd = f"efetch -db nuccore -id {','.join(acc_list)} -format acc"
+    result = subprocess.check_output(cmd, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
+    result = result.split('\n')
+    matching = set(x for x in acc_list for y in result if f'{x}.' in y)
+    if len(matching) != len(acc_list):
+        logging.info(f'Detected invalid accessions {set.symmetric_difference(matching, set(iter))}')
+    return matching
+
+def download_by_accessions(acc_list):
+    cmd = f"efetch -db nuccore -id {','.join(acc_list)} -format fasta"
+    result = subprocess.check_output(cmd, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
+    if not result.startswith('>'):
+        logging.error('There has been a problem collecting your FASTA sequences. Bouncing this batch back')
+        return None
+    header = "Unknown"
+    data = {}
+    result = result.split('\n')
+    for line in result:
+        if not line: continue
+        if line.startswith('>'):
+            header = line.rsplit('.')[0].split('>')[1]
+            if header in acc_list:
+                data[header] = f'{line}\n'
         else:
-            logging.warning('Could not read sequence from GenBank file directly. Downloading it separately.')
-            filename = os.path.basename(file).replace('.gb', '') # Files are named <accession> + <.gb>
-            script = "esearch -db nuccore -query " + filename + " | efetch -format fasta"
-            result = subprocess.check_output(script, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
-            if not result.startswith('>'):
-                logging.warning(f'Could not download sequence for accession {filename}')
-                return None
-            seq = ''.join([line for line in result.split('\n') if not line.startswith('>')])
-            return SeqIO.SeqRecord(seq).seq
+            data[header] += line
+    return data
 
-if __name__ == '__main__':
-    sys.stderr.write('\n(v) This is %s version %s\n\n' %(PROGRAM, VERSION))
-    args = parse_arguments()
-    vmr = VMR(args.input)
-    vmr.download()
+#########################
+## Quite procedural
+#########################
+args = parse_arguments()
+
+args.vmr = os.path.join(args.output, 'VMR')
+args.vmr_spreadsheet = os.path.join(args.vmr, 'vmr_spreadsheet.xlsx')
+args.valid_accessions = os.path.join(args.output, 'valid_accessions.txt')
+args.taxonomy_table = os.path.join(args.output, 'taxonomy_table.csv')
+
+if CreateDirectory(args.output) == 1:
+    sys.exit(1)
+
+if CreateDirectory(args.vmr) == 1:
+    sys.exit(1)
+
+if DownloadInternetFile(args.url, args.vmr_spreadsheet) == 1:
+    sys.exit(1)
+
+## First collapse all genbank accessions
+xlsx = pd.read_excel(args.vmr_spreadsheet)
+cleanup = set()
+for record in xlsx['Virus GENBANK accession']:
+    acc_set = parse_raw_accession_string(record)
+    if len(acc_set) == 0: continue
+    for accession in acc_set:
+        if accession in taboo: continue
+        typo = known_typos.get(accession, None)
+        if typo: accession = typo
+        cleanup.add(accession)
+cleanup = list(cleanup)
+
+## (1) don't try downloading the FASTA right away, instead, retrieve the accession identifiers
+logging.info('Checking valid accessions')
+valid_accessions = []
+for iter in itr(cleanup, 500):
+    matching = eval_accessions(iter)
+    valid_accessions += list(matching)
+
+
+## (2) write the valid accessions to file
+logging.info(f'There are {len(valid_accessions)} valid accessions in this instance')
+with open(args.valid_accessions, 'w') as hndl:
+    for accession in valid_accessions:
+        print(accession, file=hndl)
+
+## (3) connect to database
+logging.info('Connecting to database using sqlite3')
+conn = sqlite3.connect(args.database)
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS sequences (
+    id TEXT PRIMARY KEY,
+    sequence TEXT
+)
+''') ## id is the primary key (the accession)
+
+## (4) Download sequences in batches of 500 and add to database
+conn.execute('BEGIN TRANSACTION')
+
+for iter in itr(valid_accessions, 500):
+    logging.info(f'Downloading {len(iter)} accessions')
+    ## Checking if db contains
+    placeholders = ','.join('?' for _ in iter)
+    cursor.execute(f'SELECT id FROM sequences WHERE id IN ({placeholders})', iter)
+    results = cursor.fetchall()
+    found_ids = {row[0] for row in results}
+    remaining = list(set.difference( set(iter), found_ids))
+    if len(remaining) != len(iter):
+        logging.info(f'Some items were already found in database. {len(remaining)} accessions remaining')
+    if len(remaining) == 0: continue
+    data = download_by_accessions(remaining)
+    try:
+        cursor.executemany('''
+        INSERT INTO sequences (id, sequence) VALUES (?, ?)
+        ''', [(k,v) for k,v in data.items()])
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"An error occurred: {e}")
+        conn.rollback()
+logging.info('Closing connection')
+cursor.close()
+
+logging.info('Creating a taxonomy table')
+## Now take care of the taxonomy lineage information
+xlsx = xlsx.rename(columns={'Host source':'Host Source'})
+xlsx = xlsx.rename(columns={'Exemplar or additional isolate ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)'})
+xlsx = xlsx.rename(columns={'Exemplar (E) or additional isolate (A)':'Exemplar or additional isolate'})
+xlsx = xlsx.rename(columns={'Host source':'Host Source'})
+xlsx = xlsx.rename(columns={'Species Sort':'Sort'})
+xlsx = xlsx.rename(columns={'Host_Source':'Host Source', 'Species Sort':'Sort'})
+xlsx = xlsx.rename(columns={'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
+xlsx = xlsx.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort'})
+xlsx = xlsx.rename(columns={'Host/Source':'Host Source', 'Isolate sort':'Isolate Sort', 'Species sort':'Sort', 'Virus REFSEQ accession 200319':'Virus REFSEQ accession'})
+xlsx = xlsx.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+xlsx = xlsx.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+xlsx = xlsx.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'species':'Species', 'subfamily':'Subfamily'})
+xlsx = xlsx.rename(columns={'Exemplar ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+xlsx = xlsx.rename(columns={'Exemplar or Additional ':'Exemplar or additional isolate', 'Virus  name abbreviation(s)':'Virus name abbreviation(s)', 'Virus designation':'Virus isolate designation', 'family':'Family', 'genus':'Genus', 'order':'Order', 'sort':'Sort', 'species':'Species', 'subfamily':'Subfamily'})
+required_columns = ['Sort','Isolate Sort','Realm','Subrealm','Kingdom','Subkingdom','Phylum','Subphylum','Class','Subclass','Order','Suborder','Family','Subfamily','Genus','Subgenus','Species','Exemplar or additional isolate','Virus name(s)','Virus name abbreviation(s)','Virus isolate designation','Virus GENBANK accession','Virus REFSEQ accession','Genome coverage','Genome composition','Host Source']
+
+invalid_sort = False
+if 'sort' not in xlsx.iloc[:,0].name.lower():
+    invalid_sort = True
+
+for column in required_columns:
+    if column not in xlsx.columns:
+        xlsx[column] = np.nan
+        if column=='Isolate Sort':
+            xlsx[column] = 1
+
+if xlsx['Sort'].sum() == 0 or invalid_sort:
+    logging.warning('"Sort" field not properly formatted. Coercing to np.arange(df.shape[0]), i.e., a progressive integer')
+    xlsx['Sort'] = np.arange(xlsx.shape[0]) + 1
+
+virus_identifiers = [str(elem[0])+'_'+str(elem[1]) for elem in zip(xlsx['Sort'],xlsx['Isolate Sort'])]
+if len(virus_identifiers) != len(set(virus_identifiers)):
+    logging.warning('Attempted merging "Sort" with "Isolate Sort" fields but some values are not unique. Proceeding with adding a progressive integer instead of the "Sort", keeping the "Isolate Sort" intact')
+    virus_identifiers = []
+    isolate_sorts = list(xlsx['Isolate Sort'])
+    value = 0
+    for i in range(len(isolate_sorts)):
+        if isolate_sorts[i]==1:
+            value += 1
+            virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
+        else:
+            virus_identifiers.append(str(value)+'_'+str(isolate_sorts[i]))
+
+xlsx['Sort'] = virus_identifiers
+xlsx = xlsx.drop_duplicates(subset=['Sort'], keep='first') # At this point the data set is unique enough in terms of Sort. Remove the redundant rest (if present)
+
+flagged_for_removal = []
+for i, row in xlsx.iterrows():
+    accessions = parse_raw_accession_string(row['Virus GENBANK accession'])
+    if not accessions:
+        flagged_for_removal.append(i)
+    else:
+        eligible_accessions = [accession for accession in accessions if accession in valid_accessions]
+        if len(eligible_accessions) == 0:
+            flagged_for_removal.append(i)
+            continue
+        xlsx.loc[(xlsx.index==i), 'Virus GENBANK accession'] = ';'.join(eligible_accessions)
+logging.info(f'{len(flagged_for_removal)} viruses were flagged for removal, as no GENBANK identifier was found')
+xlsx = xlsx.drop(flagged_for_removal)
+xlsx = xlsx[['Sort',
+             'Isolate Sort',
+             'Realm',
+             'Subrealm',
+             'Kingdom',
+             'Subkingdom',
+             'Phylum',
+             'Subphylum',
+             'Class',
+             'Subclass',
+             'Order',
+             'Suborder',
+             'Family',
+             'Subfamily',
+             'Genus',
+             'Subgenus',
+             'Species',
+             'Exemplar or additional isolate',
+             'Virus GENBANK accession',
+             'Genome coverage',
+             'Genome composition',
+             'Host Source']]
+logging.info(f"Final number of valid sorts: {xlsx['Sort'].unique().size}")
+xlsx.to_csv(args.taxonomy_table, index=False)
+logging.info(f'Wrote taxonomy table at {args.taxonomy_table}')
