@@ -1,5 +1,5 @@
 # ICTVdump
-We envisioned to facilitate the access to any release of the Virus Metadata Resource (VMR). ICTVdump automatically collects taxonomic labels and viral genomic sequence associated to every virus listed in the official taxonomy (ICTV). By default, the latest version of the VMR is accessed, with the possibility of downloading any previous version through the command line option ```-u```.  
+We envisioned to facilitate the access to any release of the Virus Metadata Resource (VMR). ICTVdump automatically collects taxonomic labels and viral genomic sequences associated to every virus listed in the official taxonomy (ICTV). By default, the latest version of the VMR is accessed, with the possibility of downloading any previous version through the command line option ```-u```.  
 
 ![alt text](ictv_workflow.svg)
 
