@@ -1,0 +1,29 @@
+#!/bin/bash
+
+python ictvdump -d gb.db -o VMR_01-010817_MSL31 -u https://ictv.global/filebrowser/download/464?fid=464#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_02-081117_MSL31 -u https://ictv.global/filebrowser/download/465?fid=465#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_03-030118_MSL31 -u https://ictv.global/filebrowser/download/466?fid=466#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_04-290118_MSL31 -u https://ictv.global/filebrowser/download/460?fid=460#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_05-210318.MSL32 -u https://ictv.global/filebrowser/download/459?fid=459#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_06-110518.MSL32 -u https://ictv.global/filebrowser/download/458?fid=458#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_07-200718_MSL32 -u https://ictv.global/filebrowser/download/470?fid=470#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_08-201218_MSL33 -u https://ictv.global/filebrowser/download/472?fid=472#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_09-220319_MSL34 -u https://ictv.global/filebrowser/download/473?fid=473#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_10-190519_MSL34 -u https://ictv.global/filebrowser/download/475?fid=475#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_11-010619_MSL34 -u https://ictv.global/filebrowser/download/469?fid=469#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_12-160919.2_MSL34 -u https://ictv.global/filebrowser/download/463?fid=463#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_13-271119_MSL34 -u https://ictv.global/filebrowser/download/462?fid=462#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_14-010520_MSL35 -u https://ictv.global/filebrowser/download/474?fid=474#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_15-010820_MSL35 -u https://ictv.global/filebrowser/download/467?fid=467#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_16-180521_MSL36 -u https://ictv.global/filebrowser/download/468?fid=468#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_17-200721_MSL36 -u https://ictv.global/filebrowser/download/471?fid=471#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_18-191021_MSL36 -u https://ictv.global/filebrowser/download/461?fid=461#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_19-250422_MSL37 -u https://ictv.global/filebrowser/download/585?fid=585#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_20-190822_MSL37.1 -u https://ictv.global/filebrowser/download/7240?fid=7240#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_20-190822_MSL37.2 -u https://ictv.global/filebrowser/download/7674?fid=7674#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_20-190822_MSL37.3 -u https://ictv.global/filebrowser/download/7693?fid=7693#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_21-221122_MSL37 -u https://ictv.global/filebrowser/download/7842?fid=7842#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_MSL38_v1 -u https://ictv.global/filebrowser/download/12029?fid=12029#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_MSL38_v2 -u https://ictv.global/filebrowser/download/13410?fid=13410#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_MSL38_v3 -u https://ictv.global/filebrowser/download/14691?fid=14691#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_MSL39_v1 -u https://ictv.global/vmr/current?fid=15873#block-teamplus-page-title
