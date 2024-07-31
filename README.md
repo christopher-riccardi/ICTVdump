@@ -16,3 +16,6 @@ with the inclusion of [Entrez Direct](https://www.ncbi.nlm.nih.gov/books/NBK1792
 ```sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)"```.  
 
 <br>  
+
+## Additional  
+For convenience, we provide a [script](script) that allows access to every version of the VMR up until version MSL39_1
