@@ -1,26 +1,3 @@
-"""
-MIT License
-
-Copyright (c) 2024 Christopher Riccardi and Yuqiu Wang
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-"""
 taboo = {'JAEILC010000038', 
         'GECV01031551', 
         'AE006468', 
@@ -35,14 +12,20 @@ taboo = {'JAEILC010000038',
         'QQ198719', 
         'QQ198717', 
         'QQ198718',
-        'OQ7219011'
+        'OQ7219011',
+        'QNQ73380',
+        'QMP84020',
+        'QJT73696',
+        'QJT73701',
+        'QJT73698',
         'SRR2729873', 
         'AUXO017923253', 
         'K03573', 
         'C978956',
         'AF181082',
         'D01221',
-        'MT29357'} # known invalid accessions
+        'MT29357',
+        'N5326222'} # known invalid accessions
 known_typos = {'HQHQ847905':'HQ847905', 
                'EU7257772':'EU725772', 
                'LCM141331':'KX884774', 
@@ -61,6 +44,7 @@ known_typos = {'HQHQ847905':'HQ847905',
 import pandas as pd
 import numpy as np
 import subprocess
+import hashlib
 import argparse
 import logging
 import sqlite3
@@ -128,7 +112,8 @@ def download_by_accessions(acc_list):
     cmd = f"efetch -db nuccore -id {','.join(acc_list)} -format fasta"
     result = subprocess.check_output(cmd, shell = True, executable = "/bin/bash", stderr = subprocess.STDOUT).decode()
     if not result.startswith('>'):
-        logging.error('There has been a problem collecting your FASTA sequences. Bouncing this batch back')
+        logging.warning('There has been a problem collecting one or more FASTA sequences. Bouncing this batch back')
+        logging.warning(f'Batch: {acc_list}')
         return None
     header = "Unknown"
     data = {}
@@ -216,6 +201,7 @@ for iter in itr(valid_accessions, 500):
     if len(remaining) == 0: continue
     data = download_by_accessions(remaining)
     try:
+        if not data: continue
         cursor.executemany('''
         INSERT INTO sequences (id, sequence) VALUES (?, ?)
         ''', [(k,v) for k,v in data.items()])
@@ -310,5 +296,33 @@ xlsx = xlsx[['Sort',
              'Genome composition',
              'Host Source']]
 logging.info(f"Final number of valid sorts: {xlsx['Sort'].unique().size}")
+
+## Last important step: read sequence length and update the headers information
+headers = []
+md5s = []
+conn = sqlite3.connect(args.database)
+cursor = conn.cursor()
+logging.info('Reading sequence information from database')
+rows = xlsx.iterrows()
+for i, row in rows:
+    accessions = sorted(row['Virus GENBANK accession'].split(';'))
+    placeholders = ','.join('?' for _ in accessions)
+    cursor.execute(f'SELECT sequence FROM sequences WHERE id IN ({placeholders})', accessions)
+    results = cursor.fetchall()
+    sequences = [x[0] for x in results] # split the tuple
+    sizes = [len(x.split('\n')[1]) for x in sequences]
+    number_of_segments = len(sequences)
+    sequence_size = sum(sizes)
+    header = f"sort_{row['Sort']}_{number_of_segments}_{sequence_size}"
+    print(f'Adding header {header} to the taxonomy table')
+    headers.append(header)
+    md5 = hashlib.md5(''.join(accessions).encode('utf-8')).hexdigest()
+    md5s.append(md5)
+logging.info('Closing connection')
+cursor.close()
+
+xlsx['header'] = headers
+xlsx['md5'] = md5s
+
 xlsx.to_csv(args.taxonomy_table, index=False)
 logging.info(f'Wrote taxonomy table at {args.taxonomy_table}')
