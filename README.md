@@ -8,7 +8,10 @@ ICTVdump is written in python and its dependencies are listed [here](#dependenci
  ```bash
 python ictvdump -d <str> -o <str> [-u <url to any version, or default>]
  ```
-
+## Example  
+```{bash}
+python ictvdump -d gb.db -o VMR_MSL39_v1 -u https://ictv.global/vmr/current?fid=15873#block-teamplus-page-title
+```
 ## Dependencies and installation  
 The recommended way to install the dependencies is through conda/mamba on Linux kernel:  
 ```conda create -n ictv -c conda-forge openpyxl numpy pandas -y```  
