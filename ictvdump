@@ -148,7 +148,9 @@ if DownloadInternetFile(args.url, args.vmr_spreadsheet) == 1:
     sys.exit(1)
 
 ## First collapse all genbank accessions
-xlsx = pd.read_excel(args.vmr_spreadsheet)
+xls = pd.ExcelFile(args.vmr_spreadsheet)
+vmr_sheet = next(sheet for sheet in xls.sheet_names if sheet.startswith('VMR'))
+xlsx = pd.read_excel(xls, sheet_name=vmr_sheet)
 cleanup = set()
 for record in xlsx['Virus GENBANK accession']:
     acc_set = parse_raw_accession_string(record)

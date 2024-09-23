@@ -9,9 +9,15 @@ ICTVdump is written in python and its dependencies are listed [here](#dependenci
 python ictvdump -d <str> -o <str> [-u <url to any version, or default>]
  ```
 ## Example  
+To download the latest version of the VMR, run the following command:
 ```{bash}
-python ictvdump -d gb.db -o VMR_MSL39_v1 -u https://ictv.global/vmr/current?fid=15873#block-teamplus-page-title
+python ictvdump -d gb.db -o VMR_latest -u https://ictv.global/vmr/current?fid=15873#block-teamplus-page-title
 ```
+To download a specific version, such as VMR_MSL39_v1 (the version used in the paper for evaluation), use the command below:
+```{bash}
+python ictvdump -d gb.db -o VMR_MSL39_v1 -u https://ictv.global/sites/default/files/VMR/VMR_MSL39_v1.xlsx
+```
+
 ## Dependencies and installation  
 The recommended way to install the dependencies is through conda/mamba on Linux kernel:  
 ```conda create -n ictv -c conda-forge openpyxl numpy pandas -y```  
