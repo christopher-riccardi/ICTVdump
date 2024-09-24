@@ -19,8 +19,13 @@ python ictvdump -d gb.db -o VMR_MSL39_v1 -u https://ictv.global/sites/default/fi
 ```
 
 ## Dependencies and installation  
-The recommended way to install the dependencies is through conda/mamba on Linux kernel:  
-```conda create -n ictv -c conda-forge openpyxl numpy pandas -y```  
+ICTVdump uses the same environment as Virgo. If you haven’t set up the environment for Virgo yet, you can do so by following these steps:
+```{bash}
+cd environment
+conda env create -f environment.yaml
+conda activate virgo
+```
+
 with the inclusion of [Entrez Direct](https://www.ncbi.nlm.nih.gov/books/NBK179288/) in a separate step:  
 ```sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)"```.  
 
